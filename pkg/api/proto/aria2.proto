@@ -1,0 +1,408 @@
+syntax = "proto3";
+
+package aria2go.api;
+option go_package = "aria2go/pkg/api";
+
+// Aria2服务定义，提供完整的下载管理功能
+service Aria2Service {
+  // 下载管理
+  rpc AddUri(AddUriRequest) returns (AddUriResponse);
+  rpc AddTorrent(AddTorrentRequest) returns (AddTorrentResponse);
+  rpc AddMetalink(AddMetalinkRequest) returns (AddMetalinkResponse);
+  rpc Remove(RemoveRequest) returns (RemoveResponse);
+  rpc ForceRemove(ForceRemoveRequest) returns (ForceRemoveResponse);
+  rpc Pause(PauseRequest) returns (PauseResponse);
+  rpc PauseAll(PauseAllRequest) returns (PauseAllResponse);
+  rpc ForcePause(ForcePauseRequest) returns (ForcePauseResponse);
+  rpc ForcePauseAll(ForcePauseAllRequest) returns (ForcePauseAllResponse);
+  rpc Unpause(UnpauseRequest) returns (UnpauseResponse);
+  rpc UnpauseAll(UnpauseAllRequest) returns (UnpauseAllResponse);
+  
+  // 状态查询
+  rpc TellStatus(TellStatusRequest) returns (TellStatusResponse);
+  rpc TellActive(TellActiveRequest) returns (TellActiveResponse);
+  rpc TellWaiting(TellWaitingRequest) returns (TellWaitingResponse);
+  rpc TellStopped(TellStoppedRequest) returns (TellStoppedResponse);
+  
+  // 信息获取
+  rpc GetUris(GetUrisRequest) returns (GetUrisResponse);
+  rpc GetFiles(GetFilesRequest) returns (GetFilesResponse);
+  rpc GetPeers(GetPeersRequest) returns (GetPeersResponse);
+  rpc GetServers(GetServersRequest) returns (GetServersResponse);
+  rpc GetGlobalStat(GetGlobalStatRequest) returns (GetGlobalStatResponse);
+  
+  // 配置管理
+  rpc GetOption(GetOptionRequest) returns (GetOptionResponse);
+  rpc ChangeOption(ChangeOptionRequest) returns (ChangeOptionResponse);
+  rpc GetGlobalOption(GetGlobalOptionRequest) returns (GetGlobalOptionResponse);
+  rpc ChangeGlobalOption(ChangeGlobalOptionRequest) returns (ChangeGlobalOptionResponse);
+  
+  // 系统操作
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  rpc ForceShutdown(ForceShutdownRequest) returns (ForceShutdownResponse);
+  rpc SaveSession(SaveSessionRequest) returns (SaveSessionResponse);
+  
+  // 系统方法
+  rpc SystemMulticall(SystemMulticallRequest) returns (SystemMulticallResponse);
+  rpc SystemListMethods(SystemListMethodsRequest) returns (SystemListMethodsResponse);
+  rpc SystemListNotifications(SystemListNotificationsRequest) returns (SystemListNotificationsResponse);
+}
+
+// 通用类型
+message Gid {
+  string value = 1;
+}
+
+message DownloadStatus {
+  Gid gid = 1;
+  Status status = 2;
+  int64 total_length = 3;
+  int64 completed_length = 4;
+  int64 upload_length = 5;
+  string bitfield = 6;
+  int32 download_speed = 7;
+  int32 upload_speed = 8;
+  string info_hash = 9;
+  int32 num_seeders = 10;
+  bool piece_length = 11;
+  int32 num_pieces = 12;
+  int32 connections = 13;
+  string dir = 14;
+  repeated File files = 15;
+  repeated BittorrentInfo bittorrent = 16;
+  int64 uploaded_length = 17;
+  string error_code = 18;
+  string error_message = 19;
+  string followee = 20;
+  string following = 21;
+  repeated string followed_by = 22;
+}
+
+enum Status {
+  STATUS_ACTIVE = 0;
+  STATUS_WAITING = 1;
+  STATUS_PAUSED = 2;
+  STATUS_ERROR = 3;
+  STATUS_COMPLETE = 4;
+  STATUS_REMOVED = 5;
+}
+
+message File {
+  int32 index = 1;
+  string path = 2;
+  int64 length = 3;
+  int64 completed_length = 4;
+  bool selected = 5;
+  repeated Uri uris = 6;
+}
+
+message Uri {
+  string uri = 1;
+  string status = 2;
+}
+
+message BittorrentInfo {
+  repeated string announce_list = 1;
+  string comment = 2;
+  int64 creation_date = 3;
+  string mode = 4;
+  repeated string info = 5;
+}
+
+message Peer {
+  string peer_id = 1;
+  string ip = 2;
+  int32 port = 3;
+  int64 bitfield = 4;
+  bool am_choking = 5;
+  bool am_interested = 6;
+  bool peer_choking = 7;
+  bool peer_interested = 8;
+  int64 download_speed = 9;
+  int64 upload_speed = 10;
+  string seeder = 11;
+}
+
+message Server {
+  string uri = 1;
+  string current_uri = 2;
+  int64 download_speed = 3;
+}
+
+message GlobalStat {
+  int32 download_speed = 1;
+  int32 upload_speed = 2;
+  int32 num_active = 3;
+  int32 num_waiting = 4;
+  int32 num_stopped = 5;
+}
+
+// 请求/响应消息定义
+
+// AddUri
+message AddUriRequest {
+  repeated string uris = 1;
+  map<string, string> options = 2;
+  int32 position = 3;
+}
+
+message AddUriResponse {
+  Gid gid = 1;
+}
+
+// AddTorrent
+message AddTorrentRequest {
+  bytes torrent = 1;
+  repeated string uris = 2;
+  map<string, string> options = 3;
+  int32 position = 4;
+}
+
+message AddTorrentResponse {
+  Gid gid = 1;
+}
+
+// AddMetalink
+message AddMetalinkRequest {
+  bytes metalink = 1;
+  map<string, string> options = 2;
+  int32 position = 3;
+}
+
+message AddMetalinkResponse {
+  repeated Gid gids = 1;
+}
+
+// Remove
+message RemoveRequest {
+  Gid gid = 1;
+}
+
+message RemoveResponse {
+  Gid gid = 1;
+}
+
+// ForceRemove
+message ForceRemoveRequest {
+  Gid gid = 1;
+}
+
+message ForceRemoveResponse {
+  Gid gid = 1;
+}
+
+// Pause
+message PauseRequest {
+  Gid gid = 1;
+}
+
+message PauseResponse {
+  Gid gid = 1;
+}
+
+// PauseAll
+message PauseAllRequest {}
+
+message PauseAllResponse {
+  bool success = 1;
+}
+
+// ForcePause
+message ForcePauseRequest {
+  Gid gid = 1;
+}
+
+message ForcePauseResponse {
+  Gid gid = 1;
+}
+
+// ForcePauseAll
+message ForcePauseAllRequest {}
+
+message ForcePauseAllResponse {
+  bool success = 1;
+}
+
+// Unpause
+message UnpauseRequest {
+  Gid gid = 1;
+}
+
+message UnpauseResponse {
+  Gid gid = 1;
+}
+
+// UnpauseAll
+message UnpauseAllRequest {}
+
+message UnpauseAllResponse {
+  bool success = 1;
+}
+
+// TellStatus
+message TellStatusRequest {
+  Gid gid = 1;
+  repeated string keys = 2;
+}
+
+message TellStatusResponse {
+  DownloadStatus status = 1;
+}
+
+// TellActive
+message TellActiveRequest {
+  repeated string keys = 1;
+}
+
+message TellActiveResponse {
+  repeated DownloadStatus statuses = 1;
+}
+
+// TellWaiting
+message TellWaitingRequest {
+  int32 offset = 1;
+  int32 num = 2;
+  repeated string keys = 3;
+}
+
+message TellWaitingResponse {
+  repeated DownloadStatus statuses = 1;
+}
+
+// TellStopped
+message TellStoppedRequest {
+  int32 offset = 1;
+  int32 num = 2;
+  repeated string keys = 3;
+}
+
+message TellStoppedResponse {
+  repeated DownloadStatus statuses = 1;
+}
+
+// GetUris
+message GetUrisRequest {
+  Gid gid = 1;
+}
+
+message GetUrisResponse {
+  repeated Uri uris = 1;
+}
+
+// GetFiles
+message GetFilesRequest {
+  Gid gid = 1;
+}
+
+message GetFilesResponse {
+  repeated File files = 1;
+}
+
+// GetPeers
+message GetPeersRequest {
+  Gid gid = 1;
+}
+
+message GetPeersResponse {
+  repeated Peer peers = 1;
+}
+
+// GetServers
+message GetServersRequest {
+  Gid gid = 1;
+}
+
+message GetServersResponse {
+  repeated Server servers = 1;
+}
+
+// GetGlobalStat
+message GetGlobalStatRequest {}
+
+message GetGlobalStatResponse {
+  GlobalStat stat = 1;
+}
+
+// GetOption
+message GetOptionRequest {
+  Gid gid = 1;
+}
+
+message GetOptionResponse {
+  map<string, string> options = 1;
+}
+
+// ChangeOption
+message ChangeOptionRequest {
+  Gid gid = 1;
+  map<string, string> options = 2;
+}
+
+message ChangeOptionResponse {
+  bool success = 1;
+}
+
+// GetGlobalOption
+message GetGlobalOptionRequest {}
+
+message GetGlobalOptionResponse {
+  map<string, string> options = 1;
+}
+
+// ChangeGlobalOption
+message ChangeGlobalOptionRequest {
+  map<string, string> options = 1;
+}
+
+message ChangeGlobalOptionResponse {
+  bool success = 1;
+}
+
+// Shutdown
+message ShutdownRequest {}
+
+message ShutdownResponse {
+  bool success = 1;
+}
+
+// ForceShutdown
+message ForceShutdownRequest {}
+
+message ForceShutdownResponse {
+  bool success = 1;
+}
+
+// SaveSession
+message SaveSessionRequest {}
+
+message SaveSessionResponse {
+  bool success = 1;
+}
+
+// SystemMulticall
+message Call {
+  string method_name = 1;
+  repeated string params = 2;
+}
+
+message SystemMulticallRequest {
+  repeated Call calls = 1;
+}
+
+message SystemMulticallResponse {
+  repeated string results = 1;
+}
+
+// SystemListMethods
+message SystemListMethodsRequest {}
+
+message SystemListMethodsResponse {
+  repeated string methods = 1;
+}
+
+// SystemListNotifications
+message SystemListNotificationsRequest {}
+
+message SystemListNotificationsResponse {
+  repeated string notifications = 1;
+}
