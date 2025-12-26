@@ -200,9 +200,19 @@ func (t *BTTask) Stop() error {
 	// 3. 停止下载器
 	if t.downloader != nil {
 		// 停止下载器的所有连接和活动
-		// 这里应该调用 downloader 的 Stop 方法
+		// 参考 aria2 的 BTStopDownloadCommand 和 RequestGroup::setForceHaltRequested()
 		log.Printf("BTTask[%s] 停止下载器", t.ID())
-		// TODO: 实现 downloader.Stop() 方法
+		
+		// 设置 BtRuntime 停止状态
+		if t.btRuntime != nil {
+			t.btRuntime.SetHalt(true)
+			log.Printf("BTTask[%s] 已设置 BtRuntime 停止状态", t.ID())
+		}
+		
+		// 停止下载器（如果实现了 Stop 方法）
+		// if err := t.downloader.Stop(); err != nil {
+		// 	log.Printf("BTTask[%s] 停止下载器失败: %v", t.ID(), err)
+		// }
 	}
 
 	// 4. 调用父类的 Stop 方法

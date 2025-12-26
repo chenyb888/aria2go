@@ -15,6 +15,77 @@ import (
 	"time"
 )
 
+// CookieStorage Cookie 存储，参考 aria2 的 CookieStorage
+type CookieStorage struct {
+	mu      sync.RWMutex
+	cookies map[string][]*http.Cookie // key: domain
+}
+
+// NewCookieStorage 创建新的 Cookie 存储
+func NewCookieStorage() *CookieStorage {
+	return &CookieStorage{
+		cookies: make(map[string][]*http.Cookie),
+	}
+}
+
+// Add 添加 Cookie
+func (cs *CookieStorage) Add(cookie *http.Cookie) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	
+	domain := cookie.Domain
+	if domain == "" {
+		domain = "localhost"
+	}
+	
+	// 检查是否已存在相同的 Cookie
+	for i, c := range cs.cookies[domain] {
+		if c.Name == cookie.Name && c.Path == cookie.Path {
+			cs.cookies[domain][i] = cookie
+			return
+		}
+	}
+	
+	cs.cookies[domain] = append(cs.cookies[domain], cookie)
+}
+
+// Get 获取指定域名的 Cookies
+func (cs *CookieStorage) Get(domain string) []*http.Cookie {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	
+	if cookies, exists := cs.cookies[domain]; exists {
+		return cookies
+	}
+	return nil
+}
+
+// GetAll 获取所有 Cookies
+func (cs *CookieStorage) GetAll() []*http.Cookie {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	
+	var all []*http.Cookie
+	for _, cookies := range cs.cookies {
+		all = append(all, cookies...)
+	}
+	return all
+}
+
+// Clear 清除所有 Cookies
+func (cs *CookieStorage) Clear() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.cookies = make(map[string][]*http.Cookie)
+}
+
+// ClearDomain 清除指定域名的 Cookies
+func (cs *CookieStorage) ClearDomain(domain string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	delete(cs.cookies, domain)
+}
+
 // Client HTTP客户端配置
 type Client struct {
 	// HTTP客户端
@@ -38,8 +109,8 @@ type Client struct {
 	// 是否启用压缩
 	enableCompression bool
 	
-	// Cookie存储
-	cookieJar http.CookieJar
+	// Cookie存储，参考 aria2 的 CookieStorage
+	cookieStorage *CookieStorage
 	
 	// 基本认证
 	username string
@@ -94,6 +165,7 @@ func NewClient(config Config) (*Client, error) {
 		retryInterval:     config.RetryInterval,
 		maxConnsPerHost:   config.MaxConnsPerHost,
 		enableCompression: config.EnableCompression,
+		cookieStorage:     NewCookieStorage(),
 	}, nil
 }
 
@@ -291,9 +363,46 @@ func (c *Client) SetBasicAuth(username, password string) {
 	c.password = password
 }
 
-// SetCookies 设置Cookie（简化实现）
+// SetCookies 设置Cookie，参考 aria2 的 CookieStorage
 func (c *Client) SetCookies(cookies []*http.Cookie) {
-	// TODO: 实现Cookie存储
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	for _, cookie := range cookies {
+		c.cookieStorage.Add(cookie)
+	}
+}
+
+// GetCookies 获取指定域名的 Cookies
+func (c *Client) GetCookies(domain string) []*http.Cookie {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return c.cookieStorage.Get(domain)
+}
+
+// GetAllCookies 获取所有 Cookies
+func (c *Client) GetAllCookies() []*http.Cookie {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return c.cookieStorage.GetAll()
+}
+
+// ClearCookies 清除所有 Cookies
+func (c *Client) ClearCookies() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.cookieStorage.Clear()
+}
+
+// ClearCookiesForDomain 清除指定域名的 Cookies
+func (c *Client) ClearCookiesForDomain(domain string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.cookieStorage.ClearDomain(domain)
 }
 
 // isFatalError 判断是否为致命错误（不需要重试）

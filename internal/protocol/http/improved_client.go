@@ -3,7 +3,11 @@ package http
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +22,57 @@ import (
 	
 	"golang.org/x/net/publicsuffix"
 )
+
+// Checksum 校验和，参考 aria2 的 Checksum 类
+type Checksum struct {
+	HashType string // md5, sha-1, sha-256 等
+	Digest   string // 十六进制格式的校验和
+}
+
+// NewChecksum 创建新的校验和
+func NewChecksum(hashType, digest string) *Checksum {
+	return &Checksum{
+		HashType: hashType,
+		Digest:   digest,
+	}
+}
+
+// Verify 验证文件的校验和
+func (cs *Checksum) Verify(filePath string) error {
+	// 读取文件内容
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	
+	var hash []byte
+	
+	// 根据类型计算哈希
+	switch strings.ToLower(cs.HashType) {
+	case "md5":
+		h := md5.Sum(data)
+		hash = h[:]
+	case "sha-1", "sha1":
+		h := sha1.Sum(data)
+		hash = h[:]
+	case "sha-256", "sha256":
+		h := sha256.Sum256(data)
+		hash = h[:]
+	default:
+		return fmt.Errorf("unsupported hash type: %s", cs.HashType)
+	}
+	
+	// 计算十六进制表示
+	actualDigest := hex.EncodeToString(hash)
+	
+	// 比较校验和
+	if actualDigest != cs.Digest {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", 
+			filePath, cs.Digest, actualDigest)
+	}
+	
+	return nil
+}
 
 // ImprovedClient 改进的HTTP客户端，支持更多功能
 type ImprovedClient struct {
@@ -341,11 +396,22 @@ func (c *ImprovedClient) setRequestHeaders(req *http.Request, headers map[string
 	}
 }
 
-// verifyChecksum 验证文件校验和
+// verifyChecksum 验证文件校验和，参考 aria2 的 ChecksumCheckIntegrityEntry
 func (c *ImprovedClient) verifyChecksum(filePath, expectedChecksum, checksumType string) error {
-	// TODO: 实现校验和验证
-	// 这里可以添加MD5、SHA1、SHA256等校验和验证
+	// 创建校验和对象
+	checksum := NewChecksum(checksumType, expectedChecksum)
+	
+	// 验证校验和
+	if err := checksum.Verify(filePath); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+	
 	return nil
+}
+
+// VerifyChecksum 验证文件校验和（公共方法）
+func (c *ImprovedClient) VerifyChecksum(filePath, expectedChecksum, checksumType string) error {
+	return c.verifyChecksum(filePath, expectedChecksum, checksumType)
 }
 
 // updateStats 更新统计信息
