@@ -278,3 +278,27 @@ func (t *tempTask) Progress() core.TaskProgress {
 func (t *tempTask) Config() core.TaskConfig {
 	return t.config
 }
+
+func (t *tempTask) GetFiles() []core.FileInfo {
+	return []core.FileInfo{}
+}
+
+func (t *tempTask) GetURIs() []core.URIInfo {
+	return []core.URIInfo{}
+}
+
+func (t *tempTask) GetPeers() []core.PeerInfo {
+	return []core.PeerInfo{}
+}
+
+func (t *tempTask) GetServers() []core.ServerInfo {
+	return []core.ServerInfo{}
+}
+
+func (t *tempTask) GetOption() map[string]string {
+	return map[string]string{}
+}
+
+func (t *tempTask) ChangeOption(options map[string]string) error {
+	return nil
+}

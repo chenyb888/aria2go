@@ -4,6 +4,8 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,8 +35,25 @@ type Task interface {
 	
 	// Config 返回任务配置
 	Config() TaskConfig
-}
 
+	// GetFiles 获取文件列表
+	GetFiles() []FileInfo
+
+	// GetURIs 获取 URI 列表
+	GetURIs() []URIInfo
+
+	// GetPeers 获取 Peer 列表 (BitTorrent)
+	GetPeers() []PeerInfo
+
+	// GetServers 获取服务器列表 (HTTP/FTP)
+	GetServers() []ServerInfo
+
+	// GetOption 获取任务配置选项
+	GetOption() map[string]string
+
+	// ChangeOption 修改任务配置选项
+	ChangeOption(options map[string]string) error
+}
 // TaskStatus 表示任务状态
 type TaskStatus struct {
 	State     TaskState
@@ -342,9 +361,195 @@ func (t *BaseTask) UpdateProgress(progress TaskProgress) {
 	t.updateProgress(progress)
 }
 
+// GetFiles 获取文件列表（默认实现）
+func (t *BaseTask) GetFiles() []FileInfo {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// 默认实现：根据配置创建单文件信息
+	fileInfo := FileInfo{
+		Index:           1,
+		Path:            t.config.OutputPath,
+		Length:          t.progress.TotalBytes,
+		CompletedLength: t.progress.DownloadedBytes,
+		Selected:        true,
+		URIs:            t.getURIsFromConfig(),
+	}
+
+	return []FileInfo{fileInfo}
+}
+
+// GetURIs 获取 URI 列表（默认实现）
+func (t *BaseTask) GetURIs() []URIInfo {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.getURIsFromConfig()
+}
+
+// GetPeers 获取 Peer 列表（默认实现，返回空列表）
+func (t *BaseTask) GetPeers() []PeerInfo {
+	return []PeerInfo{}
+}
+
+// GetServers 获取服务器列表 (HTTP/FTP)
+// 默认实现返回空列表，协议特定任务可以覆盖此方法
+func (t *BaseTask) GetServers() []ServerInfo {
+	return []ServerInfo{}
+}
+
+// GetOption 获取任务配置选项
+func (t *BaseTask) GetOption() map[string]string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// 将 Config.Options 转换为 map[string]string
+	result := make(map[string]string)
+	for k, v := range t.config.Options {
+		if str, ok := v.(string); ok {
+			result[k] = str
+		}
+	}
+
+	// 添加常用配置选项
+	if t.config.OutputPath != "" {
+		result["out"] = t.config.OutputPath
+	}
+	if t.config.MaxSpeed > 0 {
+		result["max-download-limit"] = formatSpeed(t.config.MaxSpeed)
+	}
+	if t.config.MaxUploadSpeed > 0 {
+		result["max-upload-limit"] = formatSpeed(t.config.MaxUploadSpeed)
+	}
+	if t.config.Connections > 0 {
+		result["split"] = fmt.Sprintf("%d", t.config.Connections)
+	}
+
+	return result
+}
+
+// ChangeOption 修改任务配置选项
+func (t *BaseTask) ChangeOption(options map[string]string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.config.Options == nil {
+		t.config.Options = make(map[string]interface{})
+	}
+
+	// 更新选项
+	for k, v := range options {
+		t.config.Options[k] = v
+
+		// 处理特定选项
+		switch k {
+		case "out":
+			t.config.OutputPath = v
+		case "max-download-limit":
+			t.config.MaxSpeed = parseSpeed(v)
+		case "max-upload-limit":
+			t.config.MaxUploadSpeed = parseSpeed(v)
+		case "split":
+			if split, err := parseNumber(v); err == nil {
+				t.config.Connections = int(split)
+			}
+		case "dir":
+			// 更新输出路径的目录部分
+			if t.config.OutputPath != "" {
+				t.config.OutputPath = v + "/" + getFileName(t.config.OutputPath)
+			}
+		}
+	}
+
+	return nil
+}
+
+// formatSpeed 格式化速度为字符串
+func formatSpeed(speed int64) string {
+	return fmt.Sprintf("%d", speed)
+}
+
+// parseSpeed 解析速度字符串
+func parseSpeed(speed string) int64 {
+	var val int64
+	fmt.Sscanf(speed, "%d", &val)
+	return val
+}
+
+// parseNumber 解析数字字符串
+func parseNumber(num string) (int64, error) {
+	var val int64
+	_, err := fmt.Sscanf(num, "%d", &val)
+	return val, err
+}
+
+// getFileName 从路径中获取文件名
+func getFileName(path string) string {
+	// 简化实现，实际应该使用 filepath.Base
+	parts := strings.Split(path, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return path
+}
+
+// getURIsFromConfig 从配置中创建 URI 列表
+func (t *BaseTask) getURIsFromConfig() []URIInfo {
+	var uris []URIInfo
+	for i, url := range t.config.URLs {
+		status := "waiting"
+		if i == 0 {
+			status = "used"
+		}
+		uris = append(uris, URIInfo{
+			URI:    url,
+			Status: status,
+		})
+	}
+	return uris
+}
+
 // 错误定义
 var (
 	ErrTaskNotStartable = errors.New("task is not in a startable state")
 	ErrTaskNotPausable  = errors.New("task is not in a pausable state")
 	ErrTaskNotResumable = errors.New("task is not in a resumable state")
 )
+
+// FileInfo 表示文件信息，对应 aria2 的 FileEntry
+type FileInfo struct {
+	Index           int       // 文件索引（从1开始）
+	Path            string    // 文件路径
+	Length          int64     // 文件总大小
+	CompletedLength int64     // 已下载大小
+	Selected        bool      // 是否选中下载
+	URIs            []URIInfo // URI 列表
+}
+
+// URIInfo 表示 URI 信息
+type URIInfo struct {
+	URI    string // URI 地址
+	Status string // 状态: "used", "waiting", "error"
+}
+
+// PeerInfo 表示 BitTorrent Peer 信息
+type PeerInfo struct {
+	PeerId         string  // Peer ID
+	Ip             string  // IP 地址
+	Port           int     // 端口号
+	Bitfield       int64   // 位图
+	AmChoking      bool    // 是否阻塞对方
+	AmInterested   bool    // 是否对对方感兴趣
+	PeerChoking    bool    // 对方是否阻塞
+	PeerInterested bool    // 对方是否感兴趣
+	DownloadSpeed  int64   // 下载速度 (bytes/sec)
+	UploadSpeed    int64   // 上传速度 (bytes/sec)
+	Seeder         bool    // 是否为种子
+}
+
+// ServerInfo 表示服务器信息 (HTTP/FTP)
+type ServerInfo struct {
+	URI           string // 服务器 URI
+	CurrentUri    string // 当前使用的 URI
+	DownloadSpeed int64  // 下载速度 (bytes/sec)
+}

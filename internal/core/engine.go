@@ -60,6 +60,12 @@ type Engine interface {
 
 	// GetTask 获取任务
 	GetTask(taskID string) (Task, error)
+
+	// GetGlobalOption 获取全局配置选项
+	GetGlobalOption() map[string]string
+
+	// ChangeGlobalOption 修改全局配置选项
+	ChangeGlobalOption(options map[string]string) error
 }
 
 // DownloadEngine 是 Engine 接口的具体实现
@@ -75,6 +81,9 @@ type DownloadEngine struct {
 	
 	// 统计信息
 	stat     GlobalStat
+	
+	// 全局配置
+	globalConfig map[string]string
 }
 
 // GlobalStat 包含全局统计信息
@@ -90,10 +99,11 @@ type GlobalStat struct {
 // NewDownloadEngine 创建新的下载引擎实例
 func NewDownloadEngine() *DownloadEngine {
 	return &DownloadEngine{
-		tasks:   make(map[string]Task),
-		eventCh: make(chan Event, 100),
-		stopCh:  make(chan struct{}),
-		stat:    GlobalStat{},
+		tasks:        make(map[string]Task),
+		eventCh:      make(chan Event, 100),
+		stopCh:       make(chan struct{}),
+		stat:         GlobalStat{},
+		globalConfig: getDefaultGlobalConfig(),
 	}
 }
 
@@ -529,6 +539,50 @@ func (e *DownloadEngine) GetTask(taskID string) (Task, error) {
 	return task, nil
 }
 
+// GetGlobalOption 获取全局配置选项
+func (e *DownloadEngine) GetGlobalOption() map[string]string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// 返回全局配置的副本
+	result := make(map[string]string)
+	for k, v := range e.globalConfig {
+		result[k] = v
+	}
+	return result
+}
+
+// ChangeGlobalOption 修改全局配置选项
+func (e *DownloadEngine) ChangeGlobalOption(options map[string]string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 更新全局配置
+	for k, v := range options {
+		e.globalConfig[k] = v
+	}
+
+	// 处理特定选项
+	if speed, ok := options["max-overall-download-limit"]; ok {
+		// TODO: 应用到任务管理器
+		log.Printf("引擎[ChangeGlobalOption] max-overall-download-limit = %s", speed)
+	}
+	if speed, ok := options["max-overall-upload-limit"]; ok {
+		// TODO: 应用到任务管理器
+		log.Printf("引擎[ChangeGlobalOption] max-overall-upload-limit = %s", speed)
+	}
+	if maxConcurrent, ok := options["max-concurrent-downloads"]; ok {
+		// TODO: 应用到任务管理器
+		log.Printf("引擎[ChangeGlobalOption] max-concurrent-downloads = %s", maxConcurrent)
+	}
+	if logLevel, ok := options["log-level"]; ok {
+		// TODO: 设置日志级别
+		log.Printf("引擎[ChangeGlobalOption] log-level = %s", logLevel)
+	}
+
+	return nil
+}
+
 // 错误定义
 var (
 	ErrEngineAlreadyRunning = errors.New("download engine is already running")
@@ -542,13 +596,28 @@ func NewDefaultEngine() *DownloadEngine {
 	eventCh := make(chan Event, 100)
 	sched := NewDefaultScheduler(eventCh)
 	taskMan := NewDefaultTaskManager(sched, eventCh)
-	
+
 	return &DownloadEngine{
-		tasks:   make(map[string]Task),
-		eventCh: eventCh,
-		stopCh:  make(chan struct{}),
-		stat:    GlobalStat{},
-		sched:   sched,
-		taskMan: taskMan,
+		tasks:        make(map[string]Task),
+		eventCh:      eventCh,
+		stopCh:       make(chan struct{}),
+		stat:         GlobalStat{},
+		taskMan:      taskMan,
+		sched:        sched,
+		globalConfig: getDefaultGlobalConfig(),
+	}
+}
+
+// getDefaultGlobalConfig 返回默认全局配置
+func getDefaultGlobalConfig() map[string]string {
+	return map[string]string{
+		"dir":                        "/downloads",
+		"max-overall-download-limit": "0",
+		"max-overall-upload-limit":   "0",
+		"max-concurrent-downloads":   "5",
+		"continue":                   "true",
+		"auto-file-renaming":         "true",
+		"log-level":                  "notice",
+		"max-download-result":        "1000",
 	}
 }

@@ -598,119 +598,59 @@ func (s *Server) UnpauseAll(ctx context.Context, req *pb.UnpauseAllRequest) (*pb
 }
 
 // TellStatus 获取任务状态
-
 func (s *Server) TellStatus(ctx context.Context, req *pb.TellStatusRequest) (*pb.TellStatusResponse, error) {
-
 	// 获取任务GID
-
 	gid := req.GetGid().GetValue()
-
 	if gid == "" {
-
 		return nil, status.Error(codes.InvalidArgument, "gid is required")
-
 	}
 
-	
-
-	// 从引擎获取任务状态
-
-	taskStatus, err := s.engine.GetTaskStatus(gid)
-
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
 	if err != nil {
-
-		// 检查是否是任务未找到错误
-
-		if err.Error() == "task not found" {
-
-			return nil, status.Error(codes.NotFound, "task not found")
-
-		}
-
-		return nil, status.Errorf(codes.Internal, "failed to get task status: %v", err)
-
+		return nil, status.Error(codes.NotFound, "task not found")
 	}
 
-	
+	taskStatus := task.Status()
+	taskProgress := task.Progress()
 
 	// 转换状态枚举
-
 	var pbStatus pb.Status
-
 	switch taskStatus.State {
-
 	case core.TaskStateActive:
-
 		pbStatus = pb.Status_STATUS_ACTIVE
-
 	case core.TaskStateWaiting:
-
 		pbStatus = pb.Status_STATUS_WAITING
-
 	case core.TaskStatePaused:
-
 		pbStatus = pb.Status_STATUS_PAUSED
-
 	case core.TaskStateError:
-
 		pbStatus = pb.Status_STATUS_ERROR
-
 	case core.TaskStateCompleted:
-
 		pbStatus = pb.Status_STATUS_COMPLETE
-
 	case core.TaskStateStopped:
-
-		// aria2 中没有直接的stopped状态，映射为REMOVED或保持原样
-
-		// 这里映射为REMOVED，因为stopped可能意味着任务已移除
-
 		pbStatus = pb.Status_STATUS_REMOVED
-
 	default:
-
 		pbStatus = pb.Status_STATUS_WAITING
-
 	}
 
-	
-
-	// 构建DownloadStatus
-
+	// 构建 DownloadStatus
 	downloadStatus := &pb.DownloadStatus{
-
-		Gid:      &pb.Gid{Value: gid},
-
-		Status:   pbStatus,
-
-		// TODO: 填充更多字段
-
+		Gid:             &pb.Gid{Value: gid},
+		Status:          pbStatus,
+		TotalLength:     taskProgress.TotalBytes,
+		CompletedLength: taskProgress.DownloadedBytes,
+		DownloadSpeed:   int32(taskProgress.DownloadSpeed),
+		UploadSpeed:     int32(taskProgress.UploadSpeed),
 	}
-
-	
 
 	// 如果有错误信息，添加到响应
-
 	if taskStatus.Error != nil {
-
 		downloadStatus.ErrorMessage = taskStatus.Error.Error()
-
 	}
 
-	
-
-	// TODO: 添加更多字段，如下载进度、文件信息等
-
-	// 需要从任务对象获取更多信息
-
-	
-
 	return &pb.TellStatusResponse{
-
 		Status: downloadStatus,
-
 	}, nil
-
 }
 
 // TellActive 获取活动任务列表
@@ -766,23 +706,29 @@ func (s *Server) TellStopped(ctx context.Context, req *pb.TellStoppedRequest) (*
 
 // GetUris 获取任务URI列表
 func (s *Server) GetUris(ctx context.Context, req *pb.GetUrisRequest) (*pb.GetUrisResponse, error) {
-	// TODO: 从任务获取URI列表
-	// 目前返回示例数据
 	gid := req.GetGid().GetValue()
-	_ = gid // 暂时忽略
-	
-	// 返回示例URI列表
-	uris := []*pb.Uri{
-		{
-			Uri:    "http://example.com/file1.zip",
-			Status: "used",
-		},
-		{
-			Uri:    "http://example.com/file2.zip",
-			Status: "waiting",
-		},
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 获取 URI 列表
+	uriInfos := task.GetURIs()
+
+	// 转换为 protobuf 格式
+	uris := make([]*pb.Uri, 0, len(uriInfos))
+	for _, uriInfo := range uriInfos {
+		uris = append(uris, &pb.Uri{
+			Uri:    uriInfo.URI,
+			Status: uriInfo.Status,
+		})
+	}
+
 	return &pb.GetUrisResponse{
 		Uris: uris,
 	}, nil
@@ -790,29 +736,42 @@ func (s *Server) GetUris(ctx context.Context, req *pb.GetUrisRequest) (*pb.GetUr
 
 // GetFiles 获取任务文件列表
 func (s *Server) GetFiles(ctx context.Context, req *pb.GetFilesRequest) (*pb.GetFilesResponse, error) {
-	// TODO: 从任务获取文件列表
-	// 目前返回示例数据
 	gid := req.GetGid().GetValue()
-	_ = gid // 暂时忽略
-	
-	// 返回示例文件列表
-	files := []*pb.File{
-		{
-			Index:            1,
-			Path:             "/downloads/file1.zip",
-			Length:           1024 * 1024 * 100, // 100MB
-			CompletedLength:  1024 * 1024 * 50,  // 50MB
-			Selected:         true,
-		},
-		{
-			Index:            2,
-			Path:             "/downloads/file2.zip",
-			Length:           1024 * 1024 * 200, // 200MB
-			CompletedLength:  1024 * 1024 * 0,   // 0MB
-			Selected:         false,
-		},
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 获取文件列表
+	fileInfos := task.GetFiles()
+
+	// 转换为 protobuf 格式
+	files := make([]*pb.File, 0, len(fileInfos))
+	for _, fileInfo := range fileInfos {
+		// 转换 URI 列表
+		uris := make([]*pb.Uri, 0, len(fileInfo.URIs))
+		for _, uriInfo := range fileInfo.URIs {
+			uris = append(uris, &pb.Uri{
+				Uri:    uriInfo.URI,
+				Status: uriInfo.Status,
+			})
+		}
+
+		files = append(files, &pb.File{
+			Index:            int32(fileInfo.Index),
+			Path:             fileInfo.Path,
+			Length:           fileInfo.Length,
+			CompletedLength:  fileInfo.CompletedLength,
+			Selected:         fileInfo.Selected,
+			Uris:             uris,
+		})
+	}
+
 	return &pb.GetFilesResponse{
 		Files: files,
 	}, nil
@@ -820,41 +779,43 @@ func (s *Server) GetFiles(ctx context.Context, req *pb.GetFilesRequest) (*pb.Get
 
 // GetPeers 获取任务Peer列表
 func (s *Server) GetPeers(ctx context.Context, req *pb.GetPeersRequest) (*pb.GetPeersResponse, error) {
-	// TODO: 从BitTorrent任务获取Peer列表
-	// 目前返回示例数据
 	gid := req.GetGid().GetValue()
-	_ = gid // 暂时忽略
-	
-	// 返回示例Peer列表
-	peers := []*pb.Peer{
-		{
-			PeerId:        "peer-001",
-			Ip:            "192.168.1.101",
-			Port:          6881,
-			Bitfield:      0xFFFFFF, // 示例bitfield
-			AmChoking:     false,
-			AmInterested:  true,
-			PeerChoking:   false,
-			PeerInterested: true,
-			DownloadSpeed: 1024 * 1024, // 1MB/s
-			UploadSpeed:   512 * 1024,  // 512KB/s
-			Seeder:        "true",
-		},
-		{
-			PeerId:        "peer-002",
-			Ip:            "192.168.1.102",
-			Port:          6881,
-			Bitfield:      0xFF00, // 示例bitfield
-			AmChoking:     true,
-			AmInterested:  false,
-			PeerChoking:   true,
-			PeerInterested: false,
-			DownloadSpeed: 512 * 1024,
-			UploadSpeed:   256 * 1024,
-			Seeder:        "false",
-		},
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 获取 Peer 列表
+	peerInfos := task.GetPeers()
+
+	// 转换为 protobuf 格式
+	peers := make([]*pb.Peer, 0, len(peerInfos))
+	for _, peerInfo := range peerInfos {
+		seeder := "false"
+		if peerInfo.Seeder {
+			seeder = "true"
+		}
+
+		peers = append(peers, &pb.Peer{
+			PeerId:         peerInfo.PeerId,
+			Ip:             peerInfo.Ip,
+			Port:           int32(peerInfo.Port),
+			Bitfield:       peerInfo.Bitfield,
+			AmChoking:      peerInfo.AmChoking,
+			AmInterested:   peerInfo.AmInterested,
+			PeerChoking:    peerInfo.PeerChoking,
+			PeerInterested: peerInfo.PeerInterested,
+			DownloadSpeed:  peerInfo.DownloadSpeed,
+			UploadSpeed:    peerInfo.UploadSpeed,
+			Seeder:         seeder,
+		})
+	}
+
 	return &pb.GetPeersResponse{
 		Peers: peers,
 	}, nil
@@ -862,25 +823,30 @@ func (s *Server) GetPeers(ctx context.Context, req *pb.GetPeersRequest) (*pb.Get
 
 // GetServers 获取任务服务器列表
 func (s *Server) GetServers(ctx context.Context, req *pb.GetServersRequest) (*pb.GetServersResponse, error) {
-	// TODO: 从任务获取服务器列表（如HTTP/FTP服务器）
-	// 目前返回示例数据
 	gid := req.GetGid().GetValue()
-	_ = gid // 暂时忽略
-	
-	// 返回示例服务器列表
-	servers := []*pb.Server{
-		{
-			Uri:            "http://example.com/file1.zip",
-			CurrentUri:     "http://example.com/file1.zip",
-			DownloadSpeed:  1024 * 1024, // 1MB/s
-		},
-		{
-			Uri:            "http://example.com/file2.zip",
-			CurrentUri:     "http://example.com/file2.zip",
-			DownloadSpeed:  512 * 1024, // 512KB/s
-		},
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 获取服务器列表
+	serverInfos := task.GetServers()
+
+	// 转换为 protobuf 格式
+	servers := make([]*pb.Server, 0, len(serverInfos))
+	for _, serverInfo := range serverInfos {
+		servers = append(servers, &pb.Server{
+			Uri:           serverInfo.URI,
+			CurrentUri:    serverInfo.CurrentUri,
+			DownloadSpeed: serverInfo.DownloadSpeed,
+		})
+	}
+
 	return &pb.GetServersResponse{
 		Servers: servers,
 	}, nil
@@ -907,20 +873,20 @@ func (s *Server) GetGlobalStat(ctx context.Context, req *pb.GetGlobalStatRequest
 
 // GetOption 获取任务选项
 func (s *Server) GetOption(ctx context.Context, req *pb.GetOptionRequest) (*pb.GetOptionResponse, error) {
-	// TODO: 获取任务配置选项
 	gid := req.GetGid().GetValue()
-	_ = gid // 暂时忽略
-	
-	// 返回示例配置选项
-	options := map[string]string{
-		"dir":           "/downloads",
-		"max-connection-per-server": "5",
-		"split":        "5",
-		"continue":     "true",
-		"check-integrity": "false",
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
-	// 转换为StringMap格式
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 获取任务配置选项
+	options := task.GetOption()
+
 	return &pb.GetOptionResponse{
 		Options: options,
 	}, nil
@@ -928,14 +894,27 @@ func (s *Server) GetOption(ctx context.Context, req *pb.GetOptionRequest) (*pb.G
 
 // ChangeOption 更改任务选项
 func (s *Server) ChangeOption(ctx context.Context, req *pb.ChangeOptionRequest) (*pb.ChangeOptionResponse, error) {
-	// TODO: 修改任务配置选项
 	gid := req.GetGid().GetValue()
+	if gid == "" {
+		return nil, status.Error(codes.InvalidArgument, "gid is required")
+	}
+
 	options := req.GetOptions()
-	
-	_ = gid    // 暂时忽略
-	_ = options // 暂时忽略
-	
-	// 返回成功响应
+	if len(options) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "options is required")
+	}
+
+	// 从引擎获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 修改任务配置选项
+	if err := task.ChangeOption(options); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to change option: %v", err)
+	}
+
 	return &pb.ChangeOptionResponse{
 		Success: true,
 	}, nil
@@ -943,18 +922,9 @@ func (s *Server) ChangeOption(ctx context.Context, req *pb.ChangeOptionRequest) 
 
 // GetGlobalOption 获取全局选项
 func (s *Server) GetGlobalOption(ctx context.Context, req *pb.GetGlobalOptionRequest) (*pb.GetGlobalOptionResponse, error) {
-	// TODO: 获取全局配置选项
-	
-	// 返回示例全局配置选项
-	options := map[string]string{
-		"dir":           "/downloads",
-		"max-overall-download-limit": "0",
-		"max-overall-upload-limit": "0",
-		"max-concurrent-downloads": "5",
-		"continue":     "true",
-		"auto-file-renaming": "true",
-	}
-	
+	// 从引擎获取全局配置选项
+	options := s.engine.GetGlobalOption()
+
 	return &pb.GetGlobalOptionResponse{
 		Options: options,
 	}, nil
@@ -962,12 +932,16 @@ func (s *Server) GetGlobalOption(ctx context.Context, req *pb.GetGlobalOptionReq
 
 // ChangeGlobalOption 更改全局选项
 func (s *Server) ChangeGlobalOption(ctx context.Context, req *pb.ChangeGlobalOptionRequest) (*pb.ChangeGlobalOptionResponse, error) {
-	// TODO: 修改全局配置选项
 	options := req.GetOptions()
-	
-	_ = options // 暂时忽略
-	
-	// 返回成功响应
+	if len(options) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "options is required")
+	}
+
+	// 修改全局配置选项
+	if err := s.engine.ChangeGlobalOption(options); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to change global option: %v", err)
+	}
+
 	return &pb.ChangeGlobalOptionResponse{
 		Success: true,
 	}, nil
