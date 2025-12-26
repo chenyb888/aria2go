@@ -125,14 +125,25 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 			return fmt.Errorf("parse torrent file failed: %w", err)
 		}
 	} else if IsMagnetLink(url) {
-		// magnet链接
-		_, err := ParseMagnetLink(url)
+		// magnet链接，参考 aria2 的 UTMetadata 扩展协议
+		magnet, err := ParseMagnetLink(url)
 		if err != nil {
 			return fmt.Errorf("parse magnet link failed: %w", err)
 		}
-		
-		// TODO: 实现从DHT或tracker获取torrent文件
-		return fmt.Errorf("magnet link support not fully implemented yet")
+
+		// 尝试通过 DHT 或 tracker 获取 torrent 文件
+		log.Printf("BTClient[%s] 尝试从 magnet 获取 torrent 文件", bd.id)
+
+		// 创建 magnet 解析器
+		magnetResolver := NewMagnetResolver()
+
+		// 解析 magnet 链接获取 torrent 文件
+		torrent, err = magnetResolver.Resolve(url)
+		if err != nil {
+			return fmt.Errorf("resolve magnet link failed: %w", err)
+		}
+
+		log.Printf("BTClient[%s] 成功从 magnet 获取 torrent 文件", bd.id)
 	} else {
 		return fmt.Errorf("unsupported URL: %s", url)
 	}

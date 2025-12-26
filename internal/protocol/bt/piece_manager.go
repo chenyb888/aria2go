@@ -4,6 +4,7 @@ package bt
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -106,6 +107,19 @@ const (
 	BlockStateDownloaded                 // 已下载
 	BlockStateWritten                    // 已写入
 )
+
+// ResumeData 恢复数据结构，参考 aria2 的进度文件格式
+type ResumeData struct {
+	Version        int           `json:"version"`        // 版本号
+	InfoHash       [20]byte      `json:"infoHash"`       // InfoHash
+	PieceLength    int64         `json:"pieceLength"`    // Piece 长度
+	TotalLength    int64         `json:"totalLength"`    // 总长度
+	Bitfield       []byte        `json:"bitfield"`       // Bitfield
+	PieceStates    []PieceState  `json:"pieceStates"`    // Piece 状态
+	CompletedBytes int64         `json:"completedBytes"` // 已完成字节数
+	UploadedBytes  int64         `json:"uploadedBytes"`  // 已上传字节数
+	SavedAt        int64         `json:"savedAt"`        // 保存时间
+}
 
 // PieceManager Piece管理器
 type PieceManager struct {
@@ -987,35 +1001,104 @@ func (pm *PieceManager) VerifyAllPieces() (int, int, error) {
 	return valid, invalid, nil
 }
 
-// SaveResumeData 保存恢复数据
+// SaveResumeData 保存恢复数据，参考 aria2 的 DefaultBtProgressInfoFile::save()
 func (pm *PieceManager) SaveResumeData(filePath string) error {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	
-	resumeData := make(map[string]interface{})
-	
-	// 保存bitfield
-	resumeData["bitfield"] = pm.bitfield
-	
-	// 保存piece状态
-	pieceStates := make([]PieceState, len(pm.pieces))
-	for i, piece := range pm.pieces {
-		pieceStates[i] = piece.State
+
+	// 创建恢复数据结构
+	resumeData := ResumeData{
+		Version:        1, // 版本号
+		InfoHash:       pm.infoHash,
+		PieceLength:    pm.pieceLength,
+		TotalLength:    pm.totalLength,
+		Bitfield:       make([]byte, len(pm.bitfield)),
+		PieceStates:    make([]PieceState, len(pm.pieces)),
+		CompletedBytes: pm.completedBytes,
+		UploadedBytes:  pm.uploadedBytes,
+		SavedAt:        time.Now().Unix(),
 	}
-	resumeData["piece_states"] = pieceStates
-	
-	// 保存统计信息
-	stats := pm.GetStats()
-	resumeData["stats"] = stats
-	
-	// TODO: 实现序列化和保存到文件
-	return errors.New("save resume data not implemented yet")
+
+	// 复制 bitfield
+	copy(resumeData.Bitfield, pm.bitfield)
+
+	// 保存 piece 状态
+	for i, piece := range pm.pieces {
+		resumeData.PieceStates[i] = piece.State
+	}
+
+	// 序列化为 JSON
+	data, err := json.Marshal(resumeData)
+	if err != nil {
+		return fmt.Errorf("serialize resume data failed: %w", err)
+	}
+
+	// 先写入临时文件，然后原子性重命名（参考 aria2 的实现）
+	tempPath := filePath + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return fmt.Errorf("write temp file failed: %w", err)
+	}
+
+	// 原子性重命名
+	if err := os.Rename(tempPath, filePath); err != nil {
+		os.Remove(tempPath) // 清理临时文件
+		return fmt.Errorf("rename file failed: %w", err)
+	}
+
+	return nil
 }
 
-// LoadResumeData 加载恢复数据
+// LoadResumeData 加载恢复数据，参考 aria2 的 DefaultBtProgressInfoFile::load()
 func (pm *PieceManager) LoadResumeData(filePath string) error {
-	// TODO: 实现从文件加载恢复数据
-	return errors.New("load resume data not implemented yet")
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// 读取文件
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("read resume file failed: %w", err)
+	}
+
+	// 反序列化
+	var resumeData ResumeData
+	if err := json.Unmarshal(data, &resumeData); err != nil {
+		return fmt.Errorf("unmarshal resume data failed: %w", err)
+	}
+
+	// 验证版本
+	if resumeData.Version != 1 {
+		return fmt.Errorf("unsupported resume data version: %d", resumeData.Version)
+	}
+
+	// 验证 InfoHash（如果已设置）
+	if pm.infoHash != [20]byte{} && resumeData.InfoHash != pm.infoHash {
+		return fmt.Errorf("info hash mismatch")
+	}
+
+	// 验证 piece 长度和总长度
+	if resumeData.PieceLength != pm.pieceLength || resumeData.TotalLength != pm.totalLength {
+		return fmt.Errorf("torrent parameters mismatch")
+	}
+
+	// 恢复 bitfield
+	if len(resumeData.Bitfield) != len(pm.bitfield) {
+		return fmt.Errorf("bitfield length mismatch")
+	}
+	copy(pm.bitfield, resumeData.Bitfield)
+
+	// 恢复 piece 状态
+	if len(resumeData.PieceStates) != len(pm.pieces) {
+		return fmt.Errorf("piece states count mismatch")
+	}
+	for i, state := range resumeData.PieceStates {
+		pm.pieces[i].State = state
+	}
+
+	// 恢复统计信息
+	pm.completedBytes = resumeData.CompletedBytes
+	pm.uploadedBytes = resumeData.UploadedBytes
+
+	return nil
 }
 
 // HasPiece 检查是否拥有piece

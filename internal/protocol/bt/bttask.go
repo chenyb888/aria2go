@@ -7,10 +7,53 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"aria2go/internal/core"
 )
+
+// BtRuntime BitTorrent运行时状态，参考 aria2 的 BtRuntime
+type BtRuntime struct {
+	mu        sync.RWMutex
+	halt      bool          // 是否停止
+	uploadLengthAtStartup int64 // 启动时的上传长度
+}
+
+// NewBtRuntime 创建新的 BtRuntime
+func NewBtRuntime() *BtRuntime {
+	return &BtRuntime{
+		halt: false,
+	}
+}
+
+// SetHalt 设置停止状态
+func (br *BtRuntime) SetHalt(halt bool) {
+	br.mu.Lock()
+	defer br.mu.Unlock()
+	br.halt = halt
+}
+
+// IsHalt 检查是否停止
+func (br *BtRuntime) IsHalt() bool {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.halt
+}
+
+// SetUploadLengthAtStartup 设置启动时的上传长度
+func (br *BtRuntime) SetUploadLengthAtStartup(length int64) {
+	br.mu.Lock()
+	defer br.mu.Unlock()
+	br.uploadLengthAtStartup = length
+}
+
+// GetUploadLengthAtStartup 获取启动时的上传长度
+func (br *BtRuntime) GetUploadLengthAtStartup() int64 {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.uploadLengthAtStartup
+}
 
 // BTTask 是BitTorrent下载任务的实现
 type BTTask struct {
@@ -18,6 +61,7 @@ type BTTask struct {
 	downloader *BTDownloader
 	config     Config
 	cancelFunc context.CancelFunc
+	btRuntime  *BtRuntime // BitTorrent运行时状态
 }
 
 // NewBTTask 创建新的BitTorrent下载任务
@@ -94,8 +138,9 @@ func NewBTTask(id string, config core.TaskConfig, eventCh chan<- core.Event) (*B
 	baseTask := core.NewBaseTask(id, config, eventCh)
 
 	return &BTTask{
-		BaseTask: baseTask,
-		config:   btConfig,
+		BaseTask:  baseTask,
+		config:    btConfig,
+		btRuntime: NewBtRuntime(), // 初始化 BtRuntime
 	}, nil
 }
 
@@ -136,19 +181,31 @@ func (t *BTTask) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 停止BitTorrent下载任务
+// Stop 停止BitTorrent下载任务，参考 aria2 的 BtStopDownloadCommand
 func (t *BTTask) Stop() error {
-	// 调用取消函数
+	log.Printf("BTTask[%s] 停止任务", t.ID())
+
+	// 1. 设置 BtRuntime 的停止状态
+	if t.btRuntime != nil {
+		t.btRuntime.SetHalt(true)
+		log.Printf("BTTask[%s] 已设置 BtRuntime 停止状态", t.ID())
+	}
+
+	// 2. 调用取消函数，取消所有正在进行的操作
 	if t.cancelFunc != nil {
 		t.cancelFunc()
+		log.Printf("BTTask[%s] 已调用取消函数", t.ID())
 	}
 
-	// 停止下载器
+	// 3. 停止下载器
 	if t.downloader != nil {
-		// TODO: 实现下载器停止逻辑
+		// 停止下载器的所有连接和活动
+		// 这里应该调用 downloader 的 Stop 方法
+		log.Printf("BTTask[%s] 停止下载器", t.ID())
+		// TODO: 实现 downloader.Stop() 方法
 	}
 
-	// 调用父类的Stop方法
+	// 4. 调用父类的 Stop 方法
 	return t.BaseTask.Stop()
 }
 
@@ -182,6 +239,13 @@ func (t *BTTask) download(ctx context.Context) {
 	}
 	t.downloader = downloader
 
+	// 记录启动时的上传长度（参考 aria2 的 BtRuntime）
+	if t.btRuntime != nil && downloader.pieceManager != nil {
+		stats := downloader.pieceManager.GetStats()
+		t.btRuntime.SetUploadLengthAtStartup(stats.UploadedBytes)
+		log.Printf("BTTask[%s] 启动时上传长度: %d bytes", t.ID(), stats.UploadedBytes)
+	}
+
 	// 用于进度更新的通道
 	progressDone := make(chan struct{})
 
@@ -197,20 +261,46 @@ func (t *BTTask) download(ctx context.Context) {
 			case <-progressDone:
 				return
 			case <-ticker.C:
-				// 获取下载进度
-				// 这里需要从下载器获取实际的进度信息
-				// 暂时使用简单的实现
-				progress := core.TaskProgress{
-					TotalBytes:     0,
-					DownloadedBytes: 0,
-					UploadedBytes:  0,
-					DownloadSpeed:  0,
-					UploadSpeed:    0,
-					Progress:       0,
+				// 获取下载进度，参考 aria2 的 RequestGroup::calculateStat()
+				var progress core.TaskProgress
+
+				if t.downloader != nil && t.downloader.pieceManager != nil {
+					// 从 PieceManager 获取统计信息
+					stats := t.downloader.pieceManager.GetStats()
+
+					// 计算进度百分比
+					var progressPercent float64
+					if stats.TotalLength > 0 {
+						progressPercent = float64(stats.CompletedBytes) / float64(stats.TotalLength) * 100
+					}
+
+					progress = core.TaskProgress{
+						TotalBytes:      stats.TotalLength,
+						DownloadedBytes: stats.CompletedBytes,
+						UploadedBytes:   stats.UploadedBytes,
+						DownloadSpeed:   stats.DownloadSpeed,
+						UploadSpeed:     stats.UploadSpeed,
+						Progress:        progressPercent,
+					}
+
+					// 如果有 BtRuntime，累加上传长度（包括启动前的上传）
+					if t.btRuntime != nil {
+						allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + stats.UploadedBytes
+						progress.UploadedBytes = allTimeUploadLength
+					}
+				} else {
+					// 下载器未初始化，使用默认值
+					progress = core.TaskProgress{
+						TotalBytes:      0,
+						DownloadedBytes: 0,
+						UploadedBytes:   0,
+						DownloadSpeed:   0,
+						UploadSpeed:     0,
+						Progress:        0,
+					}
 				}
 
-				// TODO: 从下载器获取实际的进度信息
-				// 暂时更新为0进度
+				// 更新进度
 				t.BaseTask.UpdateProgress(progress)
 			}
 		}

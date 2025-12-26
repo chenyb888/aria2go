@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -336,8 +337,8 @@ func ExtractInfoHashFromURL(urlStr string) ([20]byte, error) {
 
 // MagnetResolver 解析magnet链接并获取torrent文件
 type MagnetResolver struct {
-	// DHT客户端用于解析magnet链接
-	dhtClient interface{} // TODO: 实现DHT客户端后添加具体类型
+	// DHT客户端用于解析magnet链接，参考 aria2 的 DHTGetPeersCommand
+	dhtClient *DHTClient
 	
 	// 缓存已解析的torrent文件
 	cache map[[20]byte]*TorrentFile
@@ -346,7 +347,8 @@ type MagnetResolver struct {
 // NewMagnetResolver 创建magnet解析器
 func NewMagnetResolver() *MagnetResolver {
 	return &MagnetResolver{
-		cache: make(map[[20]byte]*TorrentFile),
+		dhtClient: NewDHTClient(),
+		cache:     make(map[[20]byte]*TorrentFile),
 	}
 }
 
@@ -409,14 +411,46 @@ func (md *MagnetDownloader) Download(magnetURL string) (*TorrentFile, error) {
 	if err := magnet.Validate(); err != nil {
 		return nil, err
 	}
-	
-	// TODO: 实现实际下载逻辑
-	// 这应该包括：
-	// 1. 通过DHT获取torrent文件
-	// 2. 或者通过tracker获取peer列表并交换torrent文件
-	// 3. 或者使用web seeds获取torrent文件
-	
-	return nil, errors.New("magnet download not fully implemented yet")
+
+	// 实际下载逻辑，参考 aria2 的 UTMetadata 扩展协议
+	// 步骤：
+	// 1. 通过 DHT 获取 torrent 文件
+	// 2. 或者通过 tracker 获取 peer 列表并交换 torrent 文件
+	// 3. 或者使用 web seeds 获取 torrent 文件
+
+	log.Printf("MagnetDownloader[Download] 开始下载 magnet: %s", magnetURL)
+
+	// 尝试方法 1: 通过 DHT 获取 peers
+	if mr.dhtClient != nil {
+		log.Printf("MagnetDownloader[Download] 尝试通过 DHT 获取 peers")
+		peers, err := mr.dhtClient.GetPeers(magnet.InfoHash)
+		if err == nil && len(peers) > 0 {
+			log.Printf("MagnetDownloader[Download] 通过 DHT 获取到 %d 个 peers", len(peers))
+			// TODO: 通过 UTMetadata 扩展协议从 peers 获取 torrent 文件
+			// 这需要实现完整的 BT peer 交互逻辑
+			return nil, fmt.Errorf("UTMetadata exchange not implemented yet")
+		}
+	}
+
+	// 尝试方法 2: 通过 tracker 获取 peers
+	if len(magnet.Trackers) > 0 {
+		log.Printf("MagnetDownloader[Download] 尝试通过 tracker 获取 peers")
+		for _, tracker := range magnet.Trackers {
+			// TODO: 向 tracker 发送 announce 请求获取 peers
+			log.Printf("MagnetDownloader[Download] 联系 tracker: %s", tracker)
+		}
+		// TODO: 通过 UTMetadata 扩展协议从 peers 获取 torrent 文件
+		return nil, fmt.Errorf("tracker peer exchange not implemented yet")
+	}
+
+	// 尝试方法 3: 使用 web seeds
+	if len(magnet.WebSeeds) > 0 {
+		log.Printf("MagnetDownloader[Download] 尝试通过 web seeds 获取 torrent 文件")
+		// TODO: 从 web seeds 下载 torrent 文件
+		return nil, fmt.Errorf("web seed download not implemented yet")
+	}
+
+	return nil, errors.New("failed to download torrent file from magnet: no available method")
 }
 
 // GetTrackers 获取trackers
@@ -437,4 +471,113 @@ func (md *MagnetDownloader) GetWebSeeds(magnetURL string) ([]string, error) {
 	}
 	
 	return magnet.WebSeeds, nil
+}
+
+// DHTClient DHT客户端，参考 aria2 的 DHTRegistry 和相关组件
+type DHTClient struct {
+	running bool
+	// DHT 节点 ID
+	nodeID [20]byte
+	// 路由表
+	routingTable *DHTRoutingTable
+	// 任务队列
+	taskQueue chan DHTTask
+	// 停止通道
+	stopCh chan struct{}
+}
+
+// NewDHTClient 创建新的 DHT 客户端
+func NewDHTClient() *DHTClient {
+	// 生成随机节点 ID
+	var nodeID [20]byte
+	// TODO: 生成随机节点 ID
+
+	return &DHTClient{
+		running:     false,
+		nodeID:      nodeID,
+		routingTable: NewDHTRoutingTable(),
+		taskQueue:   make(chan DHTTask, 100),
+		stopCh:      make(chan struct{}),
+	}
+}
+
+// Start 启动 DHT 客户端
+func (dc *DHTClient) Start() error {
+	if dc.running {
+		return nil
+	}
+	dc.running = true
+
+	// 启动 DHT 任务处理循环
+	go dc.taskLoop()
+
+	return nil
+}
+
+// Stop 停止 DHT 客户端
+func (dc *DHTClient) Stop() {
+	if !dc.running {
+		return
+	}
+	dc.running = false
+	close(dc.stopCh)
+}
+
+// GetPeers 获取拥有指定 InfoHash 的 peers，参考 aria2 的 DHTGetPeersCommand
+func (dc *DHTClient) GetPeers(infoHash [20]byte) ([]string, error) {
+	// TODO: 实现通过 DHT 查找 peers
+	// 1. 从 K 桶中查找最接近 InfoHash 的节点
+	// 2. 发送 get_peers 请求
+	// 3. 收集返回的 peers
+	return nil, errors.New("DHT get_peers not implemented yet")
+}
+
+// AnnouncePeer 发布 peer 信息
+func (dc *DHTClient) AnnouncePeer(infoHash [20]byte, port int) error {
+	// TODO: 实现发布 peer 信息
+	return errors.New("DHT announce_peer not implemented yet")
+}
+
+// taskLoop DHT 任务处理循环
+func (dc *DHTClient) taskLoop() {
+	for {
+		select {
+		case <-dc.stopCh:
+			return
+		case task := <-dc.taskQueue:
+			// 处理 DHT 任务
+			task.Execute()
+		}
+	}
+}
+
+// DHTRoutingTable DHT 路由表，参考 aria2 的 DHTRoutingTable
+type DHTRoutingTable struct {
+	// K 桶
+	buckets [160]*KBucket
+}
+
+// NewDHTRoutingTable 创建新的 DHT 路由表
+func NewDHTRoutingTable() *DHTRoutingTable {
+	return &DHTRoutingTable{
+		buckets: [160]*KBucket{},
+	}
+}
+
+// KBucket K 桶
+type KBucket struct {
+	nodes []DHTNode
+}
+
+// DHTNode DHT 节点
+type DHTNode struct {
+	ID   [20]byte
+	IP   string
+	Port int
+}
+
+// DHTTask DHT 任务接口
+type DHTTask interface {
+	Execute() error
+}
 }
