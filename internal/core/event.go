@@ -31,6 +31,9 @@ const (
 	
 	// EventSpeedLimitChanged 表示速度限制变化事件
 	EventSpeedLimitChanged
+
+	// EventGlobalOptionChanged 表示全局配置变化事件
+	EventGlobalOptionChanged
 )
 
 // Event 表示一个事件

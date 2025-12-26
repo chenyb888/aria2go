@@ -371,6 +371,8 @@ func (e *DownloadEngine) handleEvent(event Event) {
 		e.handleTaskCompletion(event)
 	case EventTaskError:
 		e.handleTaskError(event)
+	case EventGlobalOptionChanged:
+		e.handleGlobalOptionChanged(event)
 	}
 }
 
@@ -403,6 +405,74 @@ func (e *DownloadEngine) handleTaskCompletion(event Event) {
 // handleTaskError 处理任务错误
 func (e *DownloadEngine) handleTaskError(event Event) {
 	// 错误处理逻辑
+}
+
+// handleGlobalOptionChanged 处理全局配置变化
+func (e *DownloadEngine) handleGlobalOptionChanged(event Event) {
+	if payload, ok := event.Payload.(map[string]interface{}); ok {
+		option, _ := payload["option"].(string)
+		value := payload["value"]
+
+		switch option {
+		case "max-overall-download-limit":
+			if limit, ok := value.(int64); ok {
+				log.Printf("引擎[handleGlobalOptionChanged] 更新下载速度限制: %d bytes/sec", limit)
+				// 这里可以通知所有下载器更新速度限制
+			}
+		case "max-overall-upload-limit":
+			if limit, ok := value.(int64); ok {
+				log.Printf("引擎[handleGlobalOptionChanged] 更新上传速度限制: %d bytes/sec", limit)
+				// 这里可以通知所有上传器更新速度限制
+			}
+		case "log-level":
+			if level, ok := value.(string); ok {
+				log.Printf("引擎[handleGlobalOptionChanged] 更新日志级别: %s", level)
+				// 设置日志级别
+				SetGlobalFileLogLevelFromString(level)
+				SetGlobalConsoleLogLevelFromString(level)
+			}
+		}
+	}
+}
+
+// parseSpeedLimit 解析速度限制字符串
+// 支持格式: "0" (无限制), "100K", "1M", "10G" 等
+func parseSpeedLimit(speedStr string) int64 {
+	if speedStr == "0" || speedStr == "" {
+		return 0 // 无限制
+	}
+
+	var value int64
+	var unit string
+
+	// 解析数字和单位
+	n, err := fmt.Sscanf(speedStr, "%d%s", &value, &unit)
+	if err != nil || n == 0 {
+		// 如果解析失败，尝试纯数字
+		fmt.Sscanf(speedStr, "%d", &value)
+		return value
+	}
+
+	// 根据单位转换
+	switch unit {
+	case "K", "k", "KB", "kb":
+		return value * 1024
+	case "M", "m", "MB", "mb":
+		return value * 1024 * 1024
+	case "G", "g", "GB", "gb":
+		return value * 1024 * 1024 * 1024
+	case "T", "t", "TB", "tb":
+		return value * 1024 * 1024 * 1024 * 1024
+	default:
+		return value
+	}
+}
+
+// parseNumber 解析数字字符串
+func parseNumber(numStr string) (int64, error) {
+	var val int64
+	_, err := fmt.Sscanf(numStr, "%d", &val)
+	return val, err
 }
 
 // EventCh 返回引擎的事件通道
@@ -574,20 +644,57 @@ func (e *DownloadEngine) ChangeGlobalOption(options map[string]string) error {
 
 	// 处理特定选项
 	if speed, ok := options["max-overall-download-limit"]; ok {
-		// TODO: 应用到任务管理器
-		log.Printf("引擎[ChangeGlobalOption] max-overall-download-limit = %s", speed)
+		// 应用到任务管理器的速度限制器
+		limit := parseSpeedLimit(speed)
+		log.Printf("引擎[ChangeGlobalOption] max-overall-download-limit = %s (%d bytes/sec)", speed, limit)
+		// 通过事件通知速度限制变化
+		if e.eventCh != nil {
+			e.eventCh <- Event{
+				Type: EventGlobalOptionChanged,
+				Payload: map[string]interface{}{
+					"option": "max-overall-download-limit",
+					"value":  limit,
+				},
+			}
+		}
 	}
 	if speed, ok := options["max-overall-upload-limit"]; ok {
-		// TODO: 应用到任务管理器
-		log.Printf("引擎[ChangeGlobalOption] max-overall-upload-limit = %s", speed)
+		// 应用到任务管理器的速度限制器
+		limit := parseSpeedLimit(speed)
+		log.Printf("引擎[ChangeGlobalOption] max-overall-upload-limit = %s (%d bytes/sec)", speed, limit)
+		// 通过事件通知速度限制变化
+		if e.eventCh != nil {
+			e.eventCh <- Event{
+				Type: EventGlobalOptionChanged,
+				Payload: map[string]interface{}{
+					"option": "max-overall-upload-limit",
+					"value":  limit,
+				},
+			}
+		}
 	}
 	if maxConcurrent, ok := options["max-concurrent-downloads"]; ok {
-		// TODO: 应用到任务管理器
-		log.Printf("引擎[ChangeGlobalOption] max-concurrent-downloads = %s", maxConcurrent)
+		// 应用到调度器的并发控制
+		if concurrent, err := parseNumber(maxConcurrent); err == nil && concurrent > 0 {
+			log.Printf("引擎[ChangeGlobalOption] max-concurrent-downloads = %s", maxConcurrent)
+			if e.sched != nil {
+				e.sched.SetMaxConcurrent(int(concurrent))
+			}
+		}
 	}
 	if logLevel, ok := options["log-level"]; ok {
-		// TODO: 设置日志级别
+		// 设置日志级别
 		log.Printf("引擎[ChangeGlobalOption] log-level = %s", logLevel)
+		// 通过事件通知日志级别变化
+		if e.eventCh != nil {
+			e.eventCh <- Event{
+				Type: EventGlobalOptionChanged,
+				Payload: map[string]interface{}{
+					"option": "log-level",
+					"value":  logLevel,
+				},
+			}
+		}
 	}
 
 	return nil
@@ -616,16 +723,12 @@ func (e *DownloadEngine) Shutdown(force bool) error {
 	} else {
 		// 优雅关闭：等待活跃任务完成
 		log.Printf("引擎[Shutdown] 等待活跃任务完成")
-		activeTasks := e.GetActiveTasks()
-		if len(activeTasks) > 0 {
-			log.Printf("引擎[Shutdown] 还有 %d 个活跃任务，等待完成", len(activeTasks))
-			// TODO: 实现等待任务完成的逻辑
-			// 当前简化处理，直接停止
-			for _, task := range activeTasks {
-				if err := task.Stop(); err != nil {
-					log.Printf("引擎[Shutdown] 停止任务失败: %s, 错误: %v", task.ID(), err)
-				}
-			}
+		e.mu.Unlock()
+		err := e.waitForTasksCompletion()
+		e.mu.Lock()
+		if err != nil {
+			log.Printf("引擎[Shutdown] 等待任务完成失败: %v", err)
+			return err
 		}
 	}
 
@@ -635,6 +738,76 @@ func (e *DownloadEngine) Shutdown(force bool) error {
 
 	log.Printf("引擎[Shutdown] 引擎已关闭")
 	return nil
+}
+
+// waitForTasksCompletion 等待所有任务完成，参考 aria2 的 downloadFinished() 方法
+func (e *DownloadEngine) waitForTasksCompletion() error {
+	log.Printf("引擎[waitForTasksCompletion] 开始等待任务完成")
+
+	// 创建一个 context 用于超时控制
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	// 定期检查任务状态
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("引擎[waitForTasksCompletion] 等待超时")
+			return fmt.Errorf("wait for tasks completion timeout")
+
+		case <-ticker.C:
+			e.mu.RLock()
+			hasActive := false
+			hasWaiting := false
+
+			for _, task := range e.tasks {
+				status := task.Status()
+				if status.State == TaskStateActive {
+					hasActive = true
+					break
+				} else if status.State == TaskStateWaiting {
+					hasWaiting = true
+				}
+			}
+			e.mu.RUnlock()
+
+			// 检查是否所有任务都已完成
+			if !hasActive && !hasWaiting {
+				log.Printf("引擎[waitForTasksCompletion] 所有任务已完成")
+				return nil
+			}
+
+			// 如果还有活跃任务，继续等待
+			if hasActive {
+				activeTasks := e.GetActiveTasks()
+				log.Printf("引擎[waitForTasksCompletion] 还有 %d 个活跃任务，继续等待", len(activeTasks))
+			} else if hasWaiting {
+				// 只有等待任务，没有活跃任务，可以停止等待
+				// 因为等待任务需要调度器来启动，而调度器可能已经停止
+				log.Printf("引擎[waitForTasksCompletion] 只有等待任务，停止等待")
+				return nil
+			}
+		}
+	}
+}
+
+// downloadFinished 检查是否所有任务都已完成，参考 aria2 的 RequestGroupMan::downloadFinished()
+func (e *DownloadEngine) downloadFinished() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// 检查是否还有活跃任务或等待任务
+	for _, task := range e.tasks {
+		status := task.Status()
+		if status.State == TaskStateActive || status.State == TaskStateWaiting {
+			return false
+		}
+	}
+
+	return true
 }
 
 // SaveSession 保存会话到文件
