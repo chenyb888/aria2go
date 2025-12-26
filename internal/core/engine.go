@@ -12,30 +12,54 @@ import (
 type Engine interface {
 	// Start 启动下载引擎
 	Start(ctx context.Context) error
-	
+
 	// Stop 停止下载引擎
 	Stop() error
-	
+
 	// AddTask 添加下载任务
 	AddTask(task Task) error
-	
+
 	// RemoveTask 移除下载任务
 	RemoveTask(taskID string) error
-	
+
 	// PauseTask 暂停任务
 	PauseTask(taskID string) error
-	
+
 	// ResumeTask 恢复任务
 	ResumeTask(taskID string) error
-	
+
 	// GetTaskStatus 获取任务状态
 	GetTaskStatus(taskID string) (TaskStatus, error)
-	
+
 	// GetTaskProgress 获取任务进度
 	GetTaskProgress(taskID string) (TaskProgress, error)
-	
+
 	// GetGlobalStat 获取全局统计信息
 	GetGlobalStat() GlobalStat
+
+	// EventCh 返回引擎的事件通道
+	EventCh() chan<- Event
+
+	// PauseAllTasks 暂停所有任务
+	PauseAllTasks() error
+
+	// ForcePauseAllTasks 强制暂停所有任务
+	ForcePauseAllTasks() error
+
+	// ResumeAllTasks 恢复所有任务
+	ResumeAllTasks() error
+
+	// GetActiveTasks 获取活跃任务列表
+	GetActiveTasks() []Task
+
+	// GetWaitingTasks 获取等待任务列表
+	GetWaitingTasks() []Task
+
+	// GetStoppedTasks 获取停止任务列表
+	GetStoppedTasks() []Task
+
+	// GetTask 获取任务
+	GetTask(taskID string) (Task, error)
 }
 
 // DownloadEngine 是 Engine 接口的具体实现
@@ -364,6 +388,145 @@ func (e *DownloadEngine) handleTaskError(event Event) {
 // EventCh 返回引擎的事件通道
 func (e *DownloadEngine) EventCh() chan<- Event {
 	return e.eventCh
+}
+
+// PauseAllTasks 暂停所有任务
+func (e *DownloadEngine) PauseAllTasks() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	log.Printf("引擎[PauseAllTasks] 暂停所有任务")
+
+	for taskID, task := range e.tasks {
+		status := task.Status()
+		if status.State == TaskStateActive {
+			if err := task.Pause(); err != nil {
+				log.Printf("引擎[PauseAllTasks] 暂停任务失败: %s, 错误: %v", taskID, err)
+				continue
+			}
+			e.stat.NumActive--
+			e.stat.NumStopped++
+		}
+	}
+
+	log.Printf("引擎[PauseAllTasks] 完成，剩余活跃任务: %d", e.stat.NumActive)
+	return nil
+}
+
+// ForcePauseAllTasks 强制暂停所有任务
+func (e *DownloadEngine) ForcePauseAllTasks() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	log.Printf("引擎[ForcePauseAllTasks] 强制暂停所有任务")
+
+	for taskID, task := range e.tasks {
+		status := task.Status()
+		// 强制停止所有活跃任务
+		if status.State == TaskStateActive || status.State == TaskStateWaiting {
+			// 先停止任务
+			if err := task.Stop(); err != nil {
+				log.Printf("引擎[ForcePauseAllTasks] 停止任务失败: %s, 错误: %v", taskID, err)
+				continue
+			}
+			// 然后暂停
+			if err := task.Pause(); err != nil {
+				log.Printf("引擎[ForcePauseAllTasks] 暂停任务失败: %s, 错误: %v", taskID, err)
+			}
+			// 更新统计
+			if status.State == TaskStateActive {
+				e.stat.NumActive--
+			} else if status.State == TaskStateWaiting {
+				e.stat.NumWaiting--
+			}
+			e.stat.NumStopped++
+		}
+	}
+
+	log.Printf("引擎[ForcePauseAllTasks] 完成，剩余活跃任务: %d, 等待任务: %d", e.stat.NumActive, e.stat.NumWaiting)
+	return nil
+}
+
+// ResumeAllTasks 恢复所有暂停的任务
+func (e *DownloadEngine) ResumeAllTasks() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	log.Printf("引擎[ResumeAllTasks] 恢复所有暂停的任务")
+
+	for taskID, task := range e.tasks {
+		status := task.Status()
+		if status.State == TaskStatePaused {
+			if err := task.Resume(); err != nil {
+				log.Printf("引擎[ResumeAllTasks] 恢复任务失败: %s, 错误: %v", taskID, err)
+				continue
+			}
+			e.stat.NumStopped--
+			e.stat.NumWaiting++
+		}
+	}
+
+	log.Printf("引擎[ResumeAllTasks] 完成，恢复的任务数已加入等待队列")
+	return nil
+}
+
+// GetActiveTasks 获取活跃任务列表
+func (e *DownloadEngine) GetActiveTasks() []Task {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var activeTasks []Task
+	for _, task := range e.tasks {
+		if task.Status().State == TaskStateActive {
+			activeTasks = append(activeTasks, task)
+		}
+	}
+
+	return activeTasks
+}
+
+// GetWaitingTasks 获取等待任务列表
+func (e *DownloadEngine) GetWaitingTasks() []Task {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var waitingTasks []Task
+	for _, task := range e.tasks {
+		if task.Status().State == TaskStateWaiting {
+			waitingTasks = append(waitingTasks, task)
+		}
+	}
+
+	return waitingTasks
+}
+
+// GetStoppedTasks 获取停止任务列表
+func (e *DownloadEngine) GetStoppedTasks() []Task {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var stoppedTasks []Task
+	for _, task := range e.tasks {
+		status := task.Status()
+		if status.State == TaskStateStopped || status.State == TaskStatePaused || status.State == TaskStateCompleted || status.State == TaskStateError {
+			stoppedTasks = append(stoppedTasks, task)
+		}
+	}
+
+	return stoppedTasks
+}
+
+// GetTask 获取任务
+func (e *DownloadEngine) GetTask(taskID string) (Task, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	task, exists := e.tasks[taskID]
+	if !exists {
+		return nil, ErrTaskNotFound
+	}
+
+	return task, nil
 }
 
 // 错误定义

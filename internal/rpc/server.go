@@ -15,6 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"aria2go/internal/core"
+	"aria2go/internal/protocol/ftp"
+	"aria2go/internal/protocol/http"
 	bt "aria2go/internal/protocol/bt"
 	metalink "aria2go/internal/protocol/metalink"
 	pb "aria2go/pkg/api/pb/aria2go/pkg/api"
@@ -157,19 +159,48 @@ func (s *Server) AddUri(ctx context.Context, req *pb.AddUriRequest) (*pb.AddUriR
 		Options:    options,
 		OutputPath: "", // 根据选项确定
 	}
-	
+
 	// 确定输出路径（如果选项中有dir或out参数）
 	if out, ok := options["out"]; ok {
 		if outStr, ok := out.(string); ok {
 			config.OutputPath = outStr
 		}
 	}
-	
-	// 创建基础任务（TODO: 需要根据协议创建具体的任务实现）
-	// 目前仅创建基础任务占位符
-	task := &core.BaseTask{
-		// 需要eventCh，暂时传nil
-		// 实际应该使用事件通道
+	if dir, ok := options["dir"]; ok {
+		if dirStr, ok := dir.(string); ok {
+			if config.OutputPath != "" {
+				// 如果同时有dir和out，组合路径
+				config.OutputPath = dirStr + "/" + config.OutputPath
+			}
+		}
+	}
+
+	// 根据协议类型创建对应的任务
+	var task core.Task
+	var err error
+
+	// 检测协议类型
+	url := req.GetUris()[0]
+	if http.IsHTTPURL(url) {
+		// HTTP/HTTPS 任务
+		task, err = http.NewHTTPTask(taskID, config, s.engine.EventCh())
+	} else if ftp.IsFTPURL(url) {
+		// FTP 任务
+		task, err = ftp.NewFTPTask(taskID, config, s.engine.EventCh())
+	} else if bt.IsBitTorrentURL(url) {
+		// BitTorrent 任务
+		task, err = bt.NewBTTask(taskID, config, s.engine.EventCh())
+	} else if metalink.IsMetalinkURL(url) {
+		// Metalink 任务
+		task, err = metalink.NewMetalinkTask(taskID, config, s.engine.EventCh())
+	} else {
+		// 未知协议，尝试使用 HTTP 任务
+		log.Printf("RPC[AddUri] 未知协议，尝试使用HTTP任务: %s", url)
+		task, err = http.NewHTTPTask(taskID, config, s.engine.EventCh())
+	}
+
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "create task failed: %v", err)
 	}
 	
 	// 添加到引擎
@@ -224,30 +255,38 @@ func (s *Server) AddTorrent(ctx context.Context, req *pb.AddTorrentRequest) (*pb
 		options["out"] = torrent.Info.Name
 	}
 	
-	// 创建任务配置（目前未使用，保留供未来扩展）
+	// 创建任务配置
 	optionsInterface := make(map[string]interface{})
 	for k, v := range options {
 		optionsInterface[k] = v
 	}
-	
+
 	taskConfig := core.TaskConfig{
 		URLs:       urls,
 		Options:    optionsInterface,
 		OutputPath: options["dir"], // 使用dir选项作为输出目录
 	}
-	_ = taskConfig // 暂时未使用
-	
-	// 尝试通过引擎创建任务
-	// TODO: 需要引擎支持从配置创建任务
-	// 目前先创建GID并返回成功响应
-	gid := fmt.Sprintf("torrent-%x-%d", torrent.InfoHash[:8], time.Now().UnixNano())
-	
+
+	// 生成任务ID（GID）
+	taskID := fmt.Sprintf("torrent-%x-%d", torrent.InfoHash[:8], time.Now().UnixNano())
+
+	// 创建 BitTorrent 任务
+	task, err := bt.NewBTTask(taskID, taskConfig, s.engine.EventCh())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "create BT task failed: %v", err)
+	}
+
+	// 添加到引擎
+	if err := s.engine.AddTask(task); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to add task: %v", err)
+	}
+
 	// 记录解析成功的日志
-	log.Printf("Torrent parsed successfully: %s, infoHash: %x, files: %d, total size: %d", 
-		torrent.Info.Name, torrent.InfoHash, len(torrent.Files), torrent.TotalSize())
-	
+	log.Printf("Torrent parsed successfully: %s, infoHash: %x, files: %d, total size: %d, gid: %s",
+		torrent.Info.Name, torrent.InfoHash, len(torrent.Files), torrent.TotalSize(), taskID)
+
 	return &pb.AddTorrentResponse{
-		Gid: &pb.Gid{Value: gid},
+		Gid: &pb.Gid{Value: taskID},
 	}, nil
 }
 
@@ -309,24 +348,58 @@ func (s *Server) AddMetalink(ctx context.Context, req *pb.AddMetalinkRequest) (*
 			fileOptions["metalink-priority"] = fmt.Sprintf("%d", resource.Priority)
 		}
 		
-		// 创建任务配置（目前未使用，保留供未来扩展）
+		// 创建任务配置
 		fileOptionsInterface := make(map[string]interface{})
 		for k, v := range fileOptions {
 			fileOptionsInterface[k] = v
 		}
-		
+
+		// 确定输出路径
+		outputPath := fileOptions["dir"]
+		if fileOptions["out"] != "" {
+			if outputPath != "" {
+				outputPath = outputPath + "/" + fileOptions["out"]
+			} else {
+				outputPath = fileOptions["out"]
+			}
+		}
+
 		taskConfig := core.TaskConfig{
 			URLs:       []string{resource.URL},
 			Options:    fileOptionsInterface,
-			OutputPath: fileOptions["dir"], // 使用dir选项作为输出目录
+			OutputPath: outputPath,
 		}
-		_ = taskConfig // 暂时未使用
-		
-		// TODO: 通过引擎创建实际任务
-		// 目前只记录日志
-		log.Printf("Metalink file parsed: %s, size: %d, resource: %s, gid: %s", 
+
+		// 根据资源类型创建对应的任务
+		var task core.Task
+		var err error
+
+		if http.IsHTTPURL(resource.URL) {
+			task, err = http.NewHTTPTask(gid, taskConfig, s.engine.EventCh())
+		} else if ftp.IsFTPURL(resource.URL) {
+			task, err = ftp.NewFTPTask(gid, taskConfig, s.engine.EventCh())
+		} else if bt.IsBitTorrentURL(resource.URL) {
+			task, err = bt.NewBTTask(gid, taskConfig, s.engine.EventCh())
+		} else {
+			// 未知协议，尝试使用 HTTP 任务
+			log.Printf("RPC[AddMetalink] 未知协议，尝试使用HTTP任务: %s", resource.URL)
+			task, err = http.NewHTTPTask(gid, taskConfig, s.engine.EventCh())
+		}
+
+		if err != nil {
+			log.Printf("RPC[AddMetalink] 创建任务失败: %s, 错误: %v", file.Name, err)
+			continue
+		}
+
+		// 添加到引擎
+		if err := s.engine.AddTask(task); err != nil {
+			log.Printf("RPC[AddMetalink] 添加任务失败: %s, 错误: %v", file.Name, err)
+			continue
+		}
+
+		log.Printf("Metalink file parsed: %s, size: %d, resource: %s, gid: %s",
 			file.Name, file.Size, resource.URL, gid)
-		
+
 		gidValues = append(gidValues, &pb.Gid{Value: gid})
 	}
 	
@@ -377,10 +450,20 @@ func (s *Server) ForceRemove(ctx context.Context, req *pb.ForceRemoveRequest) (*
 	if gid == "" {
 		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
-	// TODO: 强制移除应该先停止任务，然后再移除
-	// 目前先调用普通移除
-	err := s.engine.RemoveTask(gid)
+
+	// 先获取任务并强制停止
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 强制停止任务
+	if err := task.Stop(); err != nil {
+		log.Printf("RPC[ForceRemove] 停止任务失败: %s, 错误: %v", gid, err)
+	}
+
+	// 然后移除任务
+	err = s.engine.RemoveTask(gid)
 	if err != nil {
 		// 检查是否是任务未找到错误
 		if err.Error() == "task not found" {
@@ -388,7 +471,7 @@ func (s *Server) ForceRemove(ctx context.Context, req *pb.ForceRemoveRequest) (*
 		}
 		return nil, status.Errorf(codes.Internal, "failed to force remove task: %v", err)
 	}
-	
+
 	// 返回成功响应
 	return &pb.ForceRemoveResponse{
 		Gid: &pb.Gid{Value: gid},
@@ -421,8 +504,11 @@ func (s *Server) Pause(ctx context.Context, req *pb.PauseRequest) (*pb.PauseResp
 
 // PauseAll 暂停所有下载任务
 func (s *Server) PauseAll(ctx context.Context, req *pb.PauseAllRequest) (*pb.PauseAllResponse, error) {
-	// TODO: 实现暂停所有任务
-	// 目前返回成功响应
+	// 调用引擎暂停所有任务
+	if err := s.engine.PauseAllTasks(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to pause all tasks: %v", err)
+	}
+
 	return &pb.PauseAllResponse{
 		Success: true,
 	}, nil
@@ -435,10 +521,20 @@ func (s *Server) ForcePause(ctx context.Context, req *pb.ForcePauseRequest) (*pb
 	if gid == "" {
 		return nil, status.Error(codes.InvalidArgument, "gid is required")
 	}
-	
-	// TODO: 强制暂停应该先停止任务，然后再暂停
-	// 目前先调用普通暂停
-	err := s.engine.PauseTask(gid)
+
+	// 先获取任务
+	task, err := s.engine.GetTask(gid)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	// 强制停止任务
+	if err := task.Stop(); err != nil {
+		log.Printf("RPC[ForcePause] 停止任务失败: %s, 错误: %v", gid, err)
+	}
+
+	// 然后暂停任务
+	err = s.engine.PauseTask(gid)
 	if err != nil {
 		// 检查是否是任务未找到错误
 		if err.Error() == "task not found" {
@@ -446,7 +542,7 @@ func (s *Server) ForcePause(ctx context.Context, req *pb.ForcePauseRequest) (*pb
 		}
 		return nil, status.Errorf(codes.Internal, "failed to force pause task: %v", err)
 	}
-	
+
 	// 返回成功响应
 	return &pb.ForcePauseResponse{
 		Gid: &pb.Gid{Value: gid},
@@ -455,8 +551,11 @@ func (s *Server) ForcePause(ctx context.Context, req *pb.ForcePauseRequest) (*pb
 
 // ForcePauseAll 强制暂停所有下载任务
 func (s *Server) ForcePauseAll(ctx context.Context, req *pb.ForcePauseAllRequest) (*pb.ForcePauseAllResponse, error) {
-	// TODO: 实现强制暂停所有任务
-	// 目前返回成功响应
+	// 调用引擎强制暂停所有任务
+	if err := s.engine.ForcePauseAllTasks(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to force pause all tasks: %v", err)
+	}
+
 	return &pb.ForcePauseAllResponse{
 		Success: true,
 	}, nil
@@ -488,8 +587,11 @@ func (s *Server) Unpause(ctx context.Context, req *pb.UnpauseRequest) (*pb.Unpau
 
 // UnpauseAll 恢复所有下载任务
 func (s *Server) UnpauseAll(ctx context.Context, req *pb.UnpauseAllRequest) (*pb.UnpauseAllResponse, error) {
-	// TODO: 实现恢复所有任务
-	// 目前返回成功响应
+	// 调用引擎恢复所有任务
+	if err := s.engine.ResumeAllTasks(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to resume all tasks: %v", err)
+	}
+
 	return &pb.UnpauseAllResponse{
 		Success: true,
 	}, nil
@@ -613,28 +715,52 @@ func (s *Server) TellStatus(ctx context.Context, req *pb.TellStatusRequest) (*pb
 
 // TellActive 获取活动任务列表
 func (s *Server) TellActive(ctx context.Context, req *pb.TellActiveRequest) (*pb.TellActiveResponse, error) {
-	// TODO: 需要engine提供获取活动任务列表的方法
-	// 目前返回空列表
+	// 从引擎获取活跃任务列表
+	tasks := s.engine.GetActiveTasks()
+
+	// 转换为 DownloadStatus
+	var statuses []*pb.DownloadStatus
+	for _, task := range tasks {
+		status := s.taskToDownloadStatus(task)
+		statuses = append(statuses, status)
+	}
+
 	return &pb.TellActiveResponse{
-		Statuses: []*pb.DownloadStatus{},
+		Statuses: statuses,
 	}, nil
 }
 
 // TellWaiting 获取等待任务列表
 func (s *Server) TellWaiting(ctx context.Context, req *pb.TellWaitingRequest) (*pb.TellWaitingResponse, error) {
-	// TODO: 需要engine提供获取等待任务列表的方法
-	// 目前返回空列表
+	// 从引擎获取等待任务列表
+	tasks := s.engine.GetWaitingTasks()
+
+	// 转换为 DownloadStatus
+	var statuses []*pb.DownloadStatus
+	for _, task := range tasks {
+		status := s.taskToDownloadStatus(task)
+		statuses = append(statuses, status)
+	}
+
 	return &pb.TellWaitingResponse{
-		Statuses: []*pb.DownloadStatus{},
+		Statuses: statuses,
 	}, nil
 }
 
 // TellStopped 获取停止任务列表
 func (s *Server) TellStopped(ctx context.Context, req *pb.TellStoppedRequest) (*pb.TellStoppedResponse, error) {
-	// TODO: 需要engine提供获取停止任务列表的方法
-	// 目前返回空列表
+	// 从引擎获取停止任务列表
+	tasks := s.engine.GetStoppedTasks()
+
+	// 转换为 DownloadStatus
+	var statuses []*pb.DownloadStatus
+	for _, task := range tasks {
+		status := s.taskToDownloadStatus(task)
+		statuses = append(statuses, status)
+	}
+
 	return &pb.TellStoppedResponse{
-		Statuses: []*pb.DownloadStatus{},
+		Statuses: statuses,
 	}, nil
 }
 
@@ -880,16 +1006,57 @@ func (s *Server) SaveSession(ctx context.Context, req *pb.SaveSessionRequest) (*
 func (s *Server) SystemMulticall(ctx context.Context, req *pb.SystemMulticallRequest) (*pb.SystemMulticallResponse, error) {
 	// TODO: 实现批量调用多个RPC方法
 	calls := req.GetCalls()
-	
+
 	// 简单返回每个调用的结果
 	var results []string
 	for range calls {
 		results = append(results, "{}") // 空JSON对象
 	}
-	
+
 	return &pb.SystemMulticallResponse{
 		Results: results,
 	}, nil
+}
+
+// taskToDownloadStatus 将 Task 转换为 DownloadStatus
+func (s *Server) taskToDownloadStatus(task core.Task) *pb.DownloadStatus {
+	taskStatus := task.Status()
+	taskProgress := task.Progress()
+
+	// 转换状态枚举
+	var pbStatus pb.Status
+	switch taskStatus.State {
+	case core.TaskStateActive:
+		pbStatus = pb.Status_STATUS_ACTIVE
+	case core.TaskStateWaiting:
+		pbStatus = pb.Status_STATUS_WAITING
+	case core.TaskStatePaused:
+		pbStatus = pb.Status_STATUS_PAUSED
+	case core.TaskStateError:
+		pbStatus = pb.Status_STATUS_ERROR
+	case core.TaskStateCompleted:
+		pbStatus = pb.Status_STATUS_COMPLETE
+	case core.TaskStateStopped:
+		pbStatus = pb.Status_STATUS_REMOVED
+	default:
+		pbStatus = pb.Status_STATUS_WAITING
+	}
+
+	downloadStatus := &pb.DownloadStatus{
+		Gid:             &pb.Gid{Value: task.ID()},
+		Status:          pbStatus,
+		TotalLength:     taskProgress.TotalBytes,
+		CompletedLength: taskProgress.DownloadedBytes,
+		DownloadSpeed:   int32(taskProgress.DownloadSpeed),
+		UploadSpeed:     int32(taskProgress.UploadSpeed),
+	}
+
+	// 如果有错误信息，添加到响应
+	if taskStatus.Error != nil {
+		downloadStatus.ErrorMessage = taskStatus.Error.Error()
+	}
+
+	return downloadStatus
 }
 
 // SystemListMethods 系统方法列表
