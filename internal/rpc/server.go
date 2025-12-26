@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"aria2go/internal/core"
@@ -131,14 +132,91 @@ func (s *Server) Stop() error {
 
 // authUnaryInterceptor 认证一元拦截器
 func (s *Server) authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	// TODO: 实现认证逻辑
+	// 获取 token
+	token := s.extractToken(ctx, req)
+	
+	// 验证 token
+	if !s.validateToken(token) {
+		log.Printf("RPC[authUnaryInterceptor] 认证失败: %s", info.FullMethod)
+		return nil, status.Error(codes.Unauthenticated, "Unauthorized")
+	}
+	
+	log.Printf("RPC[authUnaryInterceptor] 认证成功: %s", info.FullMethod)
 	return handler(ctx, req)
 }
 
 // authStreamInterceptor 认证流拦截器
 func (s *Server) authStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	// TODO: 实现认证逻辑
+	// 获取 token
+	token := s.extractTokenFromStream(ss)
+	
+	// 验证 token
+	if !s.validateToken(token) {
+		log.Printf("RPC[authStreamInterceptor] 认证失败: %s", info.FullMethod)
+		return status.Error(codes.Unauthenticated, "Unauthorized")
+	}
+	
+	log.Printf("RPC[authStreamInterceptor] 认证成功: %s", info.FullMethod)
 	return handler(srv, ss)
+}
+
+// extractToken 从上下文和请求中提取 token
+func (s *Server) extractToken(ctx context.Context, req interface{}) string {
+	// 1. 首先尝试从 gRPC metadata 提取
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if tokens := md.Get("rpc-secret"); len(tokens) > 0 {
+			return tokens[0]
+		}
+	}
+	
+	// 2. 尝试从请求参数提取（兼容 aria2 格式：token:xxx）
+	if pbReq, ok := req.(interface{ GetOptions() map[string]string }); ok {
+		options := pbReq.GetOptions()
+		if token, exists := options["token"]; exists {
+			// 检查是否是 token: 格式
+			if len(token) > 6 && token[:6] == "token:" {
+				return token[6:]
+			}
+			return token
+		}
+	}
+	
+	// 3. 检查第一个参数是否是 token（aria2 兼容）
+	// 注意：这需要根据具体的请求类型来实现
+	// 这里简化处理，只使用 metadata 和 options
+	
+	return ""
+}
+
+// extractTokenFromStream 从流中提取 token
+func (s *Server) extractTokenFromStream(ss grpc.ServerStream) string {
+	// 从流上下文提取 metadata
+	if md, ok := metadata.FromIncomingContext(ss.Context()); ok {
+		if tokens := md.Get("rpc-secret"); len(tokens) > 0 {
+			return tokens[0]
+		}
+	}
+	return ""
+}
+
+// validateToken 验证 token
+func (s *Server) validateToken(token string) bool {
+	// 如果未配置 token，允许所有请求
+	if s.config.Token == "" {
+		return true
+	}
+	
+	// 比较 token
+	if token == s.config.Token {
+		return true
+	}
+	
+	// 检查是否是 token: 格式
+	if len(token) > 6 && token[:6] == "token:" {
+		return token[6:] == s.config.Token
+	}
+	
+	return false
 }
 
 // 以下为RPC方法实现占位符
