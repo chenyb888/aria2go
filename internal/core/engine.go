@@ -3,9 +3,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"os"
 	"sync"
+	"time"
 )
 
 // Engine 是下载引擎的核心接口，对应 aria2 的 DownloadEngine
@@ -66,6 +70,12 @@ type Engine interface {
 
 	// ChangeGlobalOption 修改全局配置选项
 	ChangeGlobalOption(options map[string]string) error
+
+	// Shutdown 关闭下载引擎
+	Shutdown(force bool) error
+
+	// SaveSession 保存会话到文件
+	SaveSession(filename string) error
 }
 
 // DownloadEngine 是 Engine 接口的具体实现
@@ -581,6 +591,145 @@ func (e *DownloadEngine) ChangeGlobalOption(options map[string]string) error {
 	}
 
 	return nil
+}
+
+// Shutdown 关闭下载引擎
+func (e *DownloadEngine) Shutdown(force bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.running {
+		log.Printf("引擎[Shutdown] 引擎未运行")
+		return nil
+	}
+
+	log.Printf("引擎[Shutdown] 开始关闭引擎, force=%v", force)
+
+	if force {
+		// 强制关闭：立即停止所有任务
+		log.Printf("引擎[Shutdown] 强制停止所有任务")
+		for _, task := range e.tasks {
+			if err := task.Stop(); err != nil {
+				log.Printf("引擎[Shutdown] 停止任务失败: %s, 错误: %v", task.ID(), err)
+			}
+		}
+	} else {
+		// 优雅关闭：等待活跃任务完成
+		log.Printf("引擎[Shutdown] 等待活跃任务完成")
+		activeTasks := e.GetActiveTasks()
+		if len(activeTasks) > 0 {
+			log.Printf("引擎[Shutdown] 还有 %d 个活跃任务，等待完成", len(activeTasks))
+			// TODO: 实现等待任务完成的逻辑
+			// 当前简化处理，直接停止
+			for _, task := range activeTasks {
+				if err := task.Stop(); err != nil {
+					log.Printf("引擎[Shutdown] 停止任务失败: %s, 错误: %v", task.ID(), err)
+				}
+			}
+		}
+	}
+
+	// 停止引擎
+	e.running = false
+	close(e.stopCh)
+
+	log.Printf("引擎[Shutdown] 引擎已关闭")
+	return nil
+}
+
+// SaveSession 保存会话到文件
+func (e *DownloadEngine) SaveSession(filename string) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	log.Printf("引擎[SaveSession] 保存会话到文件: %s", filename)
+
+	// 创建会话数据
+	session := SessionData{
+		Version:    "1.0",
+		SavedAt:    time.Now().Unix(),
+		GlobalStat: e.stat,
+		GlobalOption: make(map[string]string),
+	}
+
+	// 保存全局配置
+	for k, v := range e.globalConfig {
+		session.GlobalOption[k] = v
+	}
+
+	// 保存所有任务
+	for _, task := range e.tasks {
+		status := task.Status()
+		progress := task.Progress()
+		config := task.Config()
+
+		taskData := TaskData{
+			GID:         task.ID(),
+			State:       status.State.String(),
+			StartTime:   status.StartTime.Unix(),
+			EndTime:     status.EndTime.Unix(),
+			TotalBytes:  progress.TotalBytes,
+			DownloadedBytes: progress.DownloadedBytes,
+			UploadedBytes:   progress.UploadedBytes,
+			URLs:        config.URLs,
+			OutputPath:  config.OutputPath,
+			Options:     make(map[string]string),
+		}
+
+		// 转换选项为字符串
+		for k, v := range config.Options {
+			if str, ok := v.(string); ok {
+				taskData.Options[k] = str
+			}
+		}
+
+		// 如果有错误，保存错误信息
+		if status.Error != nil {
+			taskData.ErrorMessage = status.Error.Error()
+		}
+
+		session.Tasks = append(session.Tasks, taskData)
+	}
+
+	// 序列化为 JSON
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		log.Printf("引擎[SaveSession] 序列化失败: %v", err)
+		return fmt.Errorf("serialize session failed: %w", err)
+	}
+
+	// 写入文件
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		log.Printf("引擎[SaveSession] 写入文件失败: %v", err)
+		return fmt.Errorf("write session file failed: %w", err)
+	}
+
+	log.Printf("引擎[SaveSession] 会话已保存，任务数: %d", len(session.Tasks))
+	return nil
+}
+
+// SessionData 会话数据结构
+type SessionData struct {
+	Version      string            `json:"version"`
+	SavedAt      int64             `json:"savedAt"`
+	GlobalStat   GlobalStat        `json:"globalStat"`
+	GlobalOption map[string]string `json:"globalOption"`
+	Tasks        []TaskData        `json:"tasks"`
+}
+
+// TaskData 任务数据结构
+type TaskData struct {
+	GID              string            `json:"gid"`
+	State            string            `json:"state"`
+	StartTime        int64             `json:"startTime"`
+	EndTime          int64             `json:"endTime"`
+	TotalBytes       int64             `json:"totalBytes"`
+	DownloadedBytes  int64             `json:"downloadedBytes"`
+	UploadedBytes    int64             `json:"uploadedBytes"`
+	URLs             []string          `json:"urls"`
+	OutputPath       string            `json:"outputPath"`
+	Options          map[string]string `json:"options"`
+	ErrorMessage     string            `json:"errorMessage,omitempty"`
 }
 
 // 错误定义

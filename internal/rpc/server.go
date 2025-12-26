@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -949,9 +950,16 @@ func (s *Server) ChangeGlobalOption(ctx context.Context, req *pb.ChangeGlobalOpt
 
 // Shutdown 关闭aria2
 func (s *Server) Shutdown(ctx context.Context, req *pb.ShutdownRequest) (*pb.ShutdownResponse, error) {
-	// TODO: 实现优雅关闭逻辑
-	// 应该停止下载引擎和gRPC服务器
-	// 目前只返回成功响应
+	// 参考aria2实现：3秒后执行优雅关闭
+	// 先返回成功响应，给客户端时间接收响应
+	go func() {
+		time.Sleep(3 * time.Second)
+		log.Printf("RPC[Shutdown] 3秒后执行优雅关闭")
+		if err := s.engine.Shutdown(false); err != nil {
+			log.Printf("RPC[Shutdown] 关闭失败: %v", err)
+		}
+	}()
+
 	return &pb.ShutdownResponse{
 		Success: true,
 	}, nil
@@ -959,8 +967,16 @@ func (s *Server) Shutdown(ctx context.Context, req *pb.ShutdownRequest) (*pb.Shu
 
 // ForceShutdown 强制关闭aria2
 func (s *Server) ForceShutdown(ctx context.Context, req *pb.ForceShutdownRequest) (*pb.ForceShutdownResponse, error) {
-	// TODO: 实现强制关闭逻辑，立即停止所有任务
-	// 目前只返回成功响应
+	// 参考aria2实现：3秒后执行强制关闭
+	// 先返回成功响应，给客户端时间接收响应
+	go func() {
+		time.Sleep(3 * time.Second)
+		log.Printf("RPC[ForceShutdown] 3秒后执行强制关闭")
+		if err := s.engine.Shutdown(true); err != nil {
+			log.Printf("RPC[ForceShutdown] 关闭失败: %v", err)
+		}
+	}()
+
 	return &pb.ForceShutdownResponse{
 		Success: true,
 	}, nil
@@ -968,9 +984,17 @@ func (s *Server) ForceShutdown(ctx context.Context, req *pb.ForceShutdownRequest
 
 // SaveSession 保存会话
 func (s *Server) SaveSession(ctx context.Context, req *pb.SaveSessionRequest) (*pb.SaveSessionResponse, error) {
-	// TODO: 保存会话到文件
-	
-	// 返回成功响应
+	// 使用默认文件名或从全局配置获取
+	filename := "aria2go-session.json"
+	if dir, ok := s.engine.GetGlobalOption()["dir"]; ok {
+		filename = dir + "/aria2go-session.json"
+	}
+
+	// 保存会话
+	if err := s.engine.SaveSession(filename); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to save session: %v", err)
+	}
+
 	return &pb.SaveSessionResponse{
 		Success: true,
 	}, nil
@@ -978,13 +1002,46 @@ func (s *Server) SaveSession(ctx context.Context, req *pb.SaveSessionRequest) (*
 
 // SystemMulticall 系统批量调用
 func (s *Server) SystemMulticall(ctx context.Context, req *pb.SystemMulticallRequest) (*pb.SystemMulticallResponse, error) {
-	// TODO: 实现批量调用多个RPC方法
 	calls := req.GetCalls()
+	if len(calls) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "calls is required")
+	}
 
-	// 简单返回每个调用的结果
 	var results []string
-	for range calls {
-		results = append(results, "{}") // 空JSON对象
+
+	for _, call := range calls {
+		methodName := call.GetMethodName()
+		_ = call.GetParams() // 暂时忽略参数
+
+		// 递归调用禁止
+		if methodName == "system.multicall" {
+			errorMsg := fmt.Sprintf(`{"code": -1, "message": "Recursive system.multicall forbidden."}`)
+			results = append(results, errorMsg)
+			continue
+		}
+
+		// 根据方法名执行对应的 RPC 方法
+		// 注意：这里简化实现，只支持部分方法
+		var result interface{}
+		var err error
+
+		switch methodName {
+		case "aria2.getGlobalStat":
+			result, err = s.handleGetGlobalStat()
+		case "aria2.getVersion":
+			result, err = s.handleGetVersion()
+		default:
+			err = fmt.Errorf("method %s not supported in multicall", methodName)
+		}
+
+		if err != nil {
+			errorMsg := fmt.Sprintf(`{"code": -1, "message": "%s"}`, err.Error())
+			results = append(results, errorMsg)
+		} else {
+			// 成功：包装在数组中
+			resultJSON, _ := json.Marshal(result)
+			results = append(results, fmt.Sprintf("[%s]", string(resultJSON)))
+		}
 	}
 
 	return &pb.SystemMulticallResponse{
@@ -992,6 +1049,26 @@ func (s *Server) SystemMulticall(ctx context.Context, req *pb.SystemMulticallReq
 	}, nil
 }
 
+// handleGetGlobalStat 处理 getGlobalStat 方法
+func (s *Server) handleGetGlobalStat() (interface{}, error) {
+	stat := s.engine.GetGlobalStat()
+	return map[string]interface{}{
+		"downloadSpeed": stat.DownloadSpeed,
+		"uploadSpeed":   stat.UploadSpeed,
+		"numActive":     stat.NumActive,
+		"numWaiting":    stat.NumWaiting,
+		"numStopped":    stat.NumStopped,
+		"numTotal":      stat.NumTotal,
+	}, nil
+}
+
+// handleGetVersion 处理 getVersion 方法
+func (s *Server) handleGetVersion() (interface{}, error) {
+	return map[string]interface{}{
+		"version":           "1.0.0",
+		"enabledFeatures":   []string{},
+	}, nil
+}
 // taskToDownloadStatus 将 Task 转换为 DownloadStatus
 func (s *Server) taskToDownloadStatus(task core.Task) *pb.DownloadStatus {
 	taskStatus := task.Status()
