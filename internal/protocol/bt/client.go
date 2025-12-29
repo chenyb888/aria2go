@@ -255,10 +255,10 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 	if bd.config.EnableDHT {
 		bd.dhtClient = NewDHTClient()
 		if err := bd.dhtClient.Start(); err != nil {
-			log.Printf("BTClient[%s] 启动DHT客户端失败: %v", bd.id, err)
+			fmt.Printf("BTClient[%s] 启动DHT客户端失败: %v\n", bd.id, err)
 			bd.dhtClient = nil
 		} else {
-			log.Printf("BTClient[%s] DHT客户端已启动", bd.id)
+			fmt.Printf("BTClient[%s] DHT客户端已启动\n", bd.id)
 		}
 	}
 	
@@ -268,26 +268,42 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 
 // startDownload 开始下载
 func (bd *BTDownloader) startDownload(ctx context.Context) error {
+	fmt.Printf("BTClient[%s] startDownload 开始\n", bd.id)
+	os.Stdout.Sync()
+	
+	// 创建带超时的上下文用于 tracker 请求
+	trackerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	
 	// 向trackers宣告
-	peers, err := bd.trackerManager.AnnounceAll(ctx, 0, 0, bd.torrent.TotalSize())
+	peers, err := bd.trackerManager.AnnounceAll(trackerCtx, 0, 0, bd.torrent.TotalSize())
 	if err != nil {
 		// 记录错误但继续
 		fmt.Printf("Tracker announce failed: %v\n", err)
+		os.Stdout.Sync()
 	}
+	
+	fmt.Printf("BTClient[%s] Tracker 返回了 %d 个 peers\n", bd.id, len(peers))
+	os.Stdout.Sync()
 	
 	// 添加peers到peer管理器
 	for _, peer := range peers {
 		bd.peerManager.AddPeerInfo(&peer)
 	}
 	
-	// 如果tracker没有返回peers且启用了DHT，尝试通过DHT获取peers
-	if len(peers) == 0 && bd.dhtClient != nil {
-		fmt.Printf("No peers from trackers, trying DHT...\n")
+	// 如果启用了DHT，尝试通过DHT获取更多peers
+	fmt.Printf("BTClient[%s] dhtClient 是否为 nil: %v\n", bd.id, bd.dhtClient == nil)
+	os.Stdout.Sync()
+	if bd.dhtClient != nil {
+		fmt.Printf("Trying DHT to find peers...\n")
+		os.Stdout.Sync()
 		dhtPeers, err := bd.dhtClient.GetPeers(bd.torrent.InfoHash)
 		if err != nil {
 			fmt.Printf("DHT get peers failed: %v\n", err)
+			os.Stdout.Sync()
 		} else {
 			fmt.Printf("DHT returned %d peers\n", len(dhtPeers))
+			os.Stdout.Sync()
 			for _, peerAddr := range dhtPeers {
 				// 解析 peer 地址
 				parts := strings.Split(peerAddr, ":")
@@ -304,6 +320,9 @@ func (bd *BTDownloader) startDownload(ctx context.Context) error {
 				}
 			}
 		}
+	} else {
+		fmt.Printf("BTClient[%s] DHT 客户端未启用\n", bd.id)
+		os.Stdout.Sync()
 	}
 	
 	// 开始下载pieces

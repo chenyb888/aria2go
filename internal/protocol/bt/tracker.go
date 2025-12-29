@@ -637,7 +637,7 @@ func (tm *TrackerManager) AddTrackers(trackerURLs []string) {
 	}
 }
 
-// AnnounceAll 向所有tracker宣告
+// AnnounceAll 向所有trackers宣告
 func (tm *TrackerManager) AnnounceAll(ctx context.Context, uploaded, downloaded, left int64) ([]PeerInfo, error) {
 	tm.mu.Lock()
 	tm.uploaded = uploaded
@@ -647,16 +647,40 @@ func (tm *TrackerManager) AnnounceAll(ctx context.Context, uploaded, downloaded,
 	
 	var allPeers []PeerInfo
 	var errors []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	
+	// 限制并发请求数
+	semaphore := make(chan struct{}, 30) // 最多同时30个tracker请求
 	
 	for _, tracker := range tm.trackers {
-		peers, err := tracker.Announce(ctx, uploaded, downloaded, left)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", tracker.URL, err))
-			continue
-		}
-		
-		allPeers = append(allPeers, peers...)
+		wg.Add(1)
+		go func(t *Tracker) {
+			defer wg.Done()
+			
+			// 获取信号量
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			
+			// 为每个tracker设置单独的超时
+			trackerCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			
+			peers, err := t.Announce(trackerCtx, uploaded, downloaded, left)
+			if err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Sprintf("%s: %v", t.URL, err))
+				mu.Unlock()
+				return
+			}
+			
+			mu.Lock()
+			allPeers = append(allPeers, peers...)
+			mu.Unlock()
+		}(tracker)
 	}
+	
+	wg.Wait()
 	
 	if len(allPeers) == 0 && len(errors) > 0 {
 		return nil, fmt.Errorf("all trackers failed: %s", strings.Join(errors, "; "))

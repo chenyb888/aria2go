@@ -46,6 +46,31 @@ func main() {
 		}
 	}
 	
+	// 处理 --init-config 参数
+	if cfg.InputFile == "init-config" {
+		// 这里使用 InputFile 字段临时存储 init-config 的值
+		// 实际应该在 Parse 时处理
+	}
+	
+	// 检查是否有 --init-config 参数
+	initConfigPath := ""
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "--init-config=") {
+			initConfigPath = strings.TrimPrefix(arg, "--init-config=")
+			break
+		}
+	}
+	
+	// 如果指定了 --init-config，生成配置文件并退出
+	if initConfigPath != "" {
+		if err := config.SaveConfig(cfg, initConfigPath); err != nil {
+			fmt.Fprintf(os.Stderr, "生成配置文件失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("配置文件已生成: %s\n", initConfigPath)
+		return
+	}
+	
 	// 初始化日志
 	initLogging(cfg)
 	
@@ -194,24 +219,36 @@ func initLogging(cfg *config.Config) {
 		}
 	}
 	
-	// 设置日志级别（简化实现）
-	// 实际应该使用更完整的日志库
+	// 设置日志级别
 	switch cfg.LogLevel {
 	case "debug":
-		// 启用详细日志
+		// 启用详细日志，包括 DHT 交互信息
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+		log.Printf("日志级别设置为: debug")
 	case "info":
 		// 默认级别
+		log.SetFlags(log.LstdFlags)
 	case "warn":
 		// 只记录警告和错误
+		log.SetFlags(log.LstdFlags)
 	case "error":
 		// 只记录错误
+		log.SetFlags(log.LstdFlags)
 	}
 }
 
 // printHelp 显示帮助信息
 func printHelp(parser *config.Parser) {
 	fmt.Printf("aria2go - 多协议下载工具 (版本 %s)\n\n", version)
-	fmt.Printf("使用方式: aria2go [选项] URL1 [URL2 ...]\n\n")
+	fmt.Printf("使用方式:\n")
+	fmt.Printf("  aria2go [选项] URL1 [URL2 ...]    - 下载文件\n")
+	fmt.Printf("  aria2go --init-config=文件路径     - 生成默认配置文件\n\n")
+	fmt.Printf("常用选项:\n")
+	fmt.Printf("  --log-level=LEVEL    设置日志级别 (debug, info, warn, error)\n")
+	fmt.Printf("  --dir=DIR            设置下载目录\n")
+	fmt.Printf("  --enable-dht=true    启用DHT网络\n")
+	fmt.Printf("  --log-level=debug    启用调试模式\n\n")
+	fmt.Printf("完整选项列表:\n\n")
 	
 	// 获取选项集并显示帮助
 	optionSet := parser.GetOptionSet()

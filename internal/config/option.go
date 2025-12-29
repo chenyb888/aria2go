@@ -233,6 +233,7 @@ func DefaultOptionSet() *OptionSet {
 		{"human-readable", "人类可读的输出格式", true, nil, "bool"},
 		{"enable-color", "启用彩色输出", true, nil, "bool"},
 		{"dry-run", "试运行模式（不实际下载）", false, nil, "bool"},
+		{"init-config", "生成默认配置文件", "", nil, "string"},
 		
 		// 连接选项
 		{"max-connection-per-server", "每个服务器的最大连接数", 1, nil, "int"},
