@@ -2,11 +2,13 @@
 package bt
 
 import (
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 // UTMetadata 扩展协议常量

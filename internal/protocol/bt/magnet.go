@@ -407,7 +407,7 @@ func (md *MagnetDownloader) Download(magnetURL string) (*TorrentFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 验证magnet链接
 	if err := magnet.Validate(); err != nil {
 		return nil, err
@@ -422,14 +422,14 @@ func (md *MagnetDownloader) Download(magnetURL string) (*TorrentFile, error) {
 	log.Printf("MagnetDownloader[Download] 开始下载 magnet: %s", magnetURL)
 
 	// 尝试方法 1: 通过 DHT 获取 peers
-	if mr.dhtClient != nil {
+	if md.resolver.dhtClient != nil {
 		log.Printf("MagnetDownloader[Download] 尝试通过 DHT 获取 peers")
-		peers, err := mr.dhtClient.GetPeers(magnet.InfoHash)
+		peers, err := md.resolver.dhtClient.GetPeers(magnet.InfoHash)
 		if err == nil && len(peers) > 0 {
 			log.Printf("MagnetDownloader[Download] 通过 DHT 获取到 %d 个 peers", len(peers))
 			// 通过 UTMetadata 扩展协议从 peers 获取 torrent 文件
 			// 参考 aria2 的 DefaultBtInteractive::doInteractionProcessing()
-			torrent, err := mr.downloadViaUTMetadata(magnet, peers)
+			torrent, err := md.downloadViaUTMetadata(magnet, peers)
 			if err == nil {
 				return torrent, nil
 			}
@@ -441,11 +441,11 @@ func (md *MagnetDownloader) Download(magnetURL string) (*TorrentFile, error) {
 	if len(magnet.Trackers) > 0 {
 		log.Printf("MagnetDownloader[Download] 尝试通过 tracker 获取 peers")
 		for _, tracker := range magnet.Trackers {
-			peers, err := mr.contactTracker(tracker, magnet.InfoHash)
+			peers, err := md.contactTracker(tracker, magnet.InfoHash)
 			if err == nil && len(peers) > 0 {
 				log.Printf("MagnetDownloader[Download] 从 tracker %s 获取到 %d 个 peers", tracker, len(peers))
 				// 通过 UTMetadata 扩展协议从 peers 获取 torrent 文件
-				torrent, err := mr.downloadViaUTMetadata(magnet, peers)
+				torrent, err := md.downloadViaUTMetadata(magnet, peers)
 				if err == nil {
 					return torrent, nil
 				}
@@ -458,7 +458,7 @@ func (md *MagnetDownloader) Download(magnetURL string) (*TorrentFile, error) {
 	if len(magnet.WebSeeds) > 0 {
 		log.Printf("MagnetDownloader[Download] 尝试通过 web seeds 获取 torrent 文件")
 		for _, webSeed := range magnet.WebSeeds {
-			torrent, err := mr.downloadViaWebSeed(webSeed)
+			torrent, err := md.downloadViaWebSeed(webSeed)
 			if err == nil {
 				return torrent, nil
 			}
@@ -514,7 +514,7 @@ func (md *MagnetDownloader) downloadViaUTMetadata(magnet *MagnetLink, peers []st
 		
 		// 请求第一个缺失的 piece
 		pieceIndex := missingPieces[0]
-		msg, err := exchange.CreateRequest(pieceIndex)
+		_, err := exchange.CreateRequest(pieceIndex)
 		if err != nil {
 			log.Printf("MagnetDownloader[downloadViaUTMetadata] 创建请求失败: %v", err)
 			continue
@@ -542,7 +542,7 @@ func (md *MagnetDownloader) downloadViaUTMetadata(magnet *MagnetLink, peers []st
 		if metadata != nil {
 			log.Printf("MagnetDownloader[downloadViaUTMetadata] metadata 下载完成")
 			// 解析 torrent 文件
-			torrent, err := ParseTorrentFileFromMetadata(metadata)
+			torrent, err := ParseTorrentData(metadata)
 			if err != nil {
 				return nil, fmt.Errorf("parse torrent from metadata failed: %w", err)
 			}

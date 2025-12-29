@@ -252,8 +252,10 @@ func (t *BTTask) download(ctx context.Context) {
 	// 记录启动时的上传长度（参考 aria2 的 BtRuntime）
 	if t.btRuntime != nil && downloader.pieceManager != nil {
 		stats := downloader.pieceManager.GetStats()
-		t.btRuntime.SetUploadLengthAtStartup(stats.UploadedBytes)
-		log.Printf("BTTask[%s] 启动时上传长度: %d bytes", t.ID(), stats.UploadedBytes)
+		if uploadedBytes, ok := stats["UploadedBytes"].(int64); ok {
+			t.btRuntime.SetUploadLengthAtStartup(uploadedBytes)
+			log.Printf("BTTask[%s] 启动时上传长度: %d bytes", t.ID(), uploadedBytes)
+		}
 	}
 
 	// 用于进度更新的通道
@@ -278,24 +280,42 @@ func (t *BTTask) download(ctx context.Context) {
 					// 从 PieceManager 获取统计信息
 					stats := t.downloader.pieceManager.GetStats()
 
+					// 使用类型断言获取统计值
+					var totalLength, completedBytes, uploadedBytes, downloadSpeed, uploadSpeed int64
+					if val, ok := stats["TotalLength"].(int64); ok {
+						totalLength = val
+					}
+					if val, ok := stats["CompletedBytes"].(int64); ok {
+						completedBytes = val
+					}
+					if val, ok := stats["UploadedBytes"].(int64); ok {
+						uploadedBytes = val
+					}
+					if val, ok := stats["DownloadSpeed"].(int64); ok {
+						downloadSpeed = val
+					}
+					if val, ok := stats["UploadSpeed"].(int64); ok {
+						uploadSpeed = val
+					}
+
 					// 计算进度百分比
 					var progressPercent float64
-					if stats.TotalLength > 0 {
-						progressPercent = float64(stats.CompletedBytes) / float64(stats.TotalLength) * 100
+					if totalLength > 0 {
+						progressPercent = float64(completedBytes) / float64(totalLength) * 100
 					}
 
 					progress = core.TaskProgress{
-						TotalBytes:      stats.TotalLength,
-						DownloadedBytes: stats.CompletedBytes,
-						UploadedBytes:   stats.UploadedBytes,
-						DownloadSpeed:   stats.DownloadSpeed,
-						UploadSpeed:     stats.UploadSpeed,
+						TotalBytes:      totalLength,
+						DownloadedBytes: completedBytes,
+						UploadedBytes:   uploadedBytes,
+						DownloadSpeed:   downloadSpeed,
+						UploadSpeed:     uploadSpeed,
 						Progress:        progressPercent,
 					}
 
 					// 如果有 BtRuntime，累加上传长度（包括启动前的上传）
 					if t.btRuntime != nil {
-						allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + stats.UploadedBytes
+						allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + uploadedBytes
 						progress.UploadedBytes = allTimeUploadLength
 					}
 				} else {
@@ -337,6 +357,27 @@ func (t *BTTask) download(ctx context.Context) {
 		log.Printf("BTTask[%s] 下载完成", t.ID())
 		// 标记任务完成
 		t.BaseTask.SetComplete()
+	}
+}
+
+// GetURL 获取下载URL
+func (t *BTTask) GetURL() string {
+	config := t.BaseTask.Config()
+	if len(config.URLs) > 0 {
+		return config.URLs[0]
+	}
+	return ""
+}
+
+// GetOutputPath 获取输出文件路径
+func (t *BTTask) GetOutputPath() string {
+	return t.BaseTask.Config().OutputPath
+}
+
+// GetProgressCallback 获取进度回调函数
+func (t *BTTask) GetProgressCallback() func(progress core.TaskProgress) {
+	return func(progress core.TaskProgress) {
+		t.UpdateProgress(progress)
 	}
 }
 
@@ -400,5 +441,17 @@ func (t *tempTask) GetOption() map[string]string {
 }
 
 func (t *tempTask) ChangeOption(options map[string]string) error {
+	return nil
+}
+
+func (t *tempTask) GetURL() string {
+	return ""
+}
+
+func (t *tempTask) GetOutputPath() string {
+	return ""
+}
+
+func (t *tempTask) GetProgressCallback() func(progress core.TaskProgress) {
 	return nil
 }

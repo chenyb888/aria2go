@@ -14,25 +14,25 @@ import (
 type Task interface {
 	// ID 返回任务唯一标识
 	ID() string
-	
+
 	// Start 启动任务
 	Start(ctx context.Context) error
-	
+
 	// Stop 停止任务
 	Stop() error
-	
+
 	// Pause 暂停任务
 	Pause() error
-	
+
 	// Resume 恢复任务
 	Resume() error
-	
+
 	// Status 返回任务当前状态
 	Status() TaskStatus
-	
+
 	// Progress 返回任务进度信息
 	Progress() TaskProgress
-	
+
 	// Config 返回任务配置
 	Config() TaskConfig
 
@@ -53,6 +53,15 @@ type Task interface {
 
 	// ChangeOption 修改任务配置选项
 	ChangeOption(options map[string]string) error
+
+	// GetURL 获取下载URL
+	GetURL() string
+
+	// GetOutputPath 获取输出文件路径
+	GetOutputPath() string
+
+	// GetProgressCallback 获取进度回调函数
+	GetProgressCallback() func(progress TaskProgress)
 }
 // TaskStatus 表示任务状态
 type TaskStatus struct {
@@ -464,6 +473,30 @@ func (t *BaseTask) ChangeOption(options map[string]string) error {
 	return nil
 }
 
+// GetURL 获取下载URL
+func (t *BaseTask) GetURL() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if len(t.config.URLs) > 0 {
+		return t.config.URLs[0]
+	}
+	return ""
+}
+
+// GetOutputPath 获取输出文件路径
+func (t *BaseTask) GetOutputPath() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.config.OutputPath
+}
+
+// GetProgressCallback 获取进度回调函数
+func (t *BaseTask) GetProgressCallback() func(progress TaskProgress) {
+	return func(progress TaskProgress) {
+		t.UpdateProgress(progress)
+	}
+}
+
 // formatSpeed 格式化速度为字符串
 func formatSpeed(speed int64) string {
 	return fmt.Sprintf("%d", speed)
@@ -474,13 +507,6 @@ func parseSpeed(speed string) int64 {
 	var val int64
 	fmt.Sscanf(speed, "%d", &val)
 	return val
-}
-
-// parseNumber 解析数字字符串
-func parseNumber(num string) (int64, error) {
-	var val int64
-	_, err := fmt.Sscanf(num, "%d", &val)
-	return val, err
 }
 
 // getFileName 从路径中获取文件名

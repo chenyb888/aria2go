@@ -85,7 +85,7 @@ type Logger interface {
 	// FileLogLevelEnabled 检查文件日志级别是否启用
 	FileLogLevelEnabled(level LogLevel) bool
 	// ConsoleLogLevelEnabled 检查控制台日志级别是否启用
-	ConsoleLogLevelEnabled(level LogLevel)
+	ConsoleLogLevelEnabled(level LogLevel) bool
 	// LevelEnabled 检查日志级别是否启用（文件或控制台）
 	LevelEnabled(level LogLevel) bool
 }

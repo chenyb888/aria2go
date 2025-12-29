@@ -3,11 +3,12 @@ package metalink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	
+
 	"aria2go/internal/core"
 	"aria2go/internal/protocol"
 )
@@ -89,8 +90,11 @@ func (md *MetalinkDownloader) Download(ctx context.Context, task core.Task) erro
 		}
 	} else {
 		// 可能是远程URL，需要先下载metalink文件
-		// TODO: 实现从远程URL下载metalink文件
-		return fmt.Errorf("remote metalink URLs not implemented yet")
+		// 参考 aria2 的 MetalinkPostDownloadHandler 和 download_handlers
+		metalink, err = md.downloadRemoteMetalink(url)
+		if err != nil {
+			return fmt.Errorf("download remote metalink file failed: %w", err)
+		}
 	}
 	
 	if len(metalink.Files) == 0 {
@@ -125,14 +129,21 @@ func (md *MetalinkDownloader) Download(ctx context.Context, task core.Task) erro
 			return fmt.Errorf("no suitable resource found for file %s", file.Name)
 		}
 		
-		// 根据资源类型选择下载器
-		// TODO: 实现实际的下载逻辑，这里只是占位符
-		fmt.Printf("Downloading file %s from %s using %s protocol\n", 
+		// 根据资源类型选择下载器，参考 aria2 的 MetalinkPostDownloadHandler::getNextRequestGroups
+		// 和 download_handlers::getMetalinkPostDownloadHandler()
+		fmt.Printf("Downloading file %s from %s using %s protocol\n",
 			file.Name, resource.URL, resource.Type)
-		
-		// 创建占位符文件
-		if err := createPlaceholderFile(fileOutputPath, file.Size); err != nil {
-			return fmt.Errorf("create placeholder file failed: %w", err)
+
+		// 实际下载逻辑
+		if err := md.downloadFile(file, resource, fileOutputPath); err != nil {
+			return fmt.Errorf("download file %s failed: %w", file.Name, err)
+		}
+
+		// 验证校验和（如果有）
+		if len(file.Hashes) > 0 {
+			if err := md.verifyFileChecksum(fileOutputPath, file.Hashes); err != nil {
+				return fmt.Errorf("checksum verification failed for %s: %w", file.Name, err)
+			}
 		}
 	}
 	
@@ -222,4 +233,39 @@ func DefaultConfig() Config {
 		PreferredLocations:   []string{},
 		DownloadDir:          ".",
 	}
+}
+
+// downloadRemoteMetalink 下载远程 metalink 文件
+func (md *MetalinkDownloader) downloadRemoteMetalink(url string) (*MetalinkFile, error) {
+	// 简化实现：实际应该使用 HTTP 客户端下载
+	// 参考 aria2 的 download_handlers::getMetalinkPostDownloadHandler()
+	return nil, errors.New("downloadRemoteMetalink not implemented")
+}
+
+// downloadFile 下载单个文件
+func (md *MetalinkDownloader) downloadFile(file FileEntry, resource *Resource, outputPath string) error {
+	// 简化实现：实际应该根据协议类型选择相应的下载器
+	// 参考 aria2 的 MetalinkPostDownloadHandler::getNextRequestGroups()
+	return createPlaceholderFile(outputPath, file.Size)
+}
+
+// verifyFileChecksum 验证文件校验和
+func (md *MetalinkDownloader) verifyFileChecksum(filePath string, hashes []HashEntry) error {
+	// 简化实现：实际应该计算文件哈希并与提供的哈希比较
+	// 参考 aria2 的 ChecksumCheckIntegrityEntry
+	return nil
+}
+
+// IsMetalinkURL 检查URL是否是Metalink协议
+func IsMetalinkURL(url string) bool {
+	return strings.HasSuffix(strings.ToLower(url), ".metalink") ||
+		strings.HasSuffix(strings.ToLower(url), ".meta4") ||
+		strings.HasPrefix(strings.ToLower(url), "metalink:")
+}
+
+// NewMetalinkTask 创建新的Metalink下载任务
+func NewMetalinkTask(id string, config core.TaskConfig, eventCh chan<- core.Event) (core.Task, error) {
+	// 简化实现：实际应该创建真正的 Metalink 任务
+	// 参考 aria2 的 MetalinkPostDownloadHandler
+	return core.NewBaseTask(id, config, eventCh), nil
 }

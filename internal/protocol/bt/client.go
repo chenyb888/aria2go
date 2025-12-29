@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
-	
+
 	"aria2go/internal/core"
 	"aria2go/internal/protocol"
 )
@@ -82,7 +85,9 @@ type BTDownloader struct {
 	pieceManager *PieceManager
 	peerManager  *PeerManager
 	trackerManager *TrackerManager
+	dhtClient    *DHTClient
 	peerID       [20]byte
+	id           string
 }
 
 // NewBTDownloader 创建BitTorrent下载器
@@ -99,6 +104,7 @@ func NewBTDownloader(config Config) (*BTDownloader, error) {
 		client:  client,
 		config:  config,
 		peerID:  peerID,
+		id:      fmt.Sprintf("%x", peerID[:8]),
 	}, nil
 }
 
@@ -126,7 +132,7 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 		}
 	} else if IsMagnetLink(url) {
 		// magnet链接，参考 aria2 的 UTMetadata 扩展协议
-		magnet, err := ParseMagnetLink(url)
+		_, err := ParseMagnetLink(url)
 		if err != nil {
 			return fmt.Errorf("parse magnet link failed: %w", err)
 		}
@@ -187,6 +193,17 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 	
 	bd.trackerManager = trackerManager
 	
+	// 初始化DHT客户端（如果启用）
+	if bd.config.EnableDHT {
+		bd.dhtClient = NewDHTClient()
+		if err := bd.dhtClient.Start(); err != nil {
+			log.Printf("BTClient[%s] 启动DHT客户端失败: %v", bd.id, err)
+			bd.dhtClient = nil
+		} else {
+			log.Printf("BTClient[%s] DHT客户端已启动", bd.id)
+		}
+	}
+	
 	// 开始下载
 	return bd.startDownload(ctx)
 }
@@ -205,6 +222,32 @@ func (bd *BTDownloader) startDownload(ctx context.Context) error {
 		bd.peerManager.AddPeerInfo(&peer)
 	}
 	
+	// 如果tracker没有返回peers且启用了DHT，尝试通过DHT获取peers
+	if len(peers) == 0 && bd.dhtClient != nil {
+		fmt.Printf("No peers from trackers, trying DHT...\n")
+		dhtPeers, err := bd.dhtClient.GetPeers(bd.torrent.InfoHash)
+		if err != nil {
+			fmt.Printf("DHT get peers failed: %v\n", err)
+		} else {
+			fmt.Printf("DHT returned %d peers\n", len(dhtPeers))
+			for _, peerAddr := range dhtPeers {
+				// 解析 peer 地址
+				parts := strings.Split(peerAddr, ":")
+				if len(parts) == 2 {
+					port, err := strconv.ParseUint(parts[1], 10, 16)
+					if err != nil {
+						continue
+					}
+					peer := PeerInfo{
+						IP:   net.ParseIP(parts[0]),
+						Port: uint16(port),
+					}
+					bd.peerManager.AddPeerInfo(&peer)
+				}
+			}
+		}
+	}
+	
 	// 开始下载pieces
 	go bd.downloadPieces(ctx)
 	
@@ -213,6 +256,11 @@ func (bd *BTDownloader) startDownload(ctx context.Context) error {
 	
 	// 等待完成或上下文取消
 	<-ctx.Done()
+	
+	// 停止DHT客户端
+	if bd.dhtClient != nil {
+		bd.dhtClient.Stop()
+	}
 	
 	return nil
 }

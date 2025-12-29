@@ -417,10 +417,27 @@ func (t *HTTPTask) updateProgress(totalBytes, downloadedBytes int64) {
 		DownloadedBytes: downloadedBytes,
 		Progress:       0,
 	}
-	
+
 	if totalBytes > 0 {
 		progress.Progress = float64(downloadedBytes) / float64(totalBytes) * 100
 	}
-	
+
 	t.BaseTask.UpdateProgress(progress)
+}
+
+// GetURL 获取下载URL
+func (t *HTTPTask) GetURL() string {
+	return t.url
+}
+
+// GetOutputPath 获取输出文件路径
+func (t *HTTPTask) GetOutputPath() string {
+	return t.outputPath
+}
+
+// GetProgressCallback 获取进度回调函数
+func (t *HTTPTask) GetProgressCallback() func(progress core.TaskProgress) {
+	return func(progress core.TaskProgress) {
+		t.UpdateProgress(progress)
+	}
 }

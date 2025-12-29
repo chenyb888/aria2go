@@ -153,13 +153,24 @@ type PieceManager struct {
 	cacheSize   int64                // 当前缓存大小
 	cacheHits   int64                // 缓存命中数
 	cacheMisses int64                // 缓存未命中数
-	
+
+	// 上传统计
+	uploadedBytes  int64              // 已上传字节数
+	totalLength    int64              // 总长度
+	downloadSpeed  int64              // 下载速度
+	uploadSpeed    int64              // 上传速度
+
+	// Torrent 信息
+	infoHash       [20]byte          // InfoHash
+	pieceLength    int64              // Piece 长度
+	completedBytes int64              // 已完成字节数
+
 	// 锁和同步
 	mu          sync.RWMutex
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
-	
+
 	// 事件通道
 	eventCh     chan PieceEvent
 }
@@ -205,12 +216,19 @@ func NewPieceManager(torrent *TorrentFile, config PieceManagerConfig, requester 
 		pieces:         make([]*PieceInfo, torrent.NumPieces()),
 		pieceMap:       make(map[int]*PieceInfo),
 		blocks:         make(map[[2]int]*BlockInfo),
-		pieceQueue:     make(chan *PieceInfo, 100),
+		pieceQueue:     make(chan *PieceInfo, 1000),  // 增加队列容量以避免队列满的问题
 		blockQueue:     make(chan *BlockInfo, 1000),
 		memoryCache:    make(map[[2]int][]byte),
 		ctx:            ctx,
 		cancel:         cancel,
 		eventCh:        make(chan PieceEvent, 100),
+		totalLength:    torrent.TotalSize(),
+		uploadedBytes:  0,
+		downloadSpeed:  0,
+		uploadSpeed:    0,
+		infoHash:       torrent.InfoHash,
+		pieceLength:    torrent.PieceLength,
+		completedBytes: 0,
 	}
 	
 	// 初始化bitfield
@@ -916,24 +934,31 @@ func (pm *PieceManager) GetWrittenBytes() int64 {
 func (pm *PieceManager) GetStats() map[string]interface{} {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	
+
 	stats := make(map[string]interface{})
-	
+
 	stats["total_pieces"] = len(pm.pieces)
 	stats["downloaded_pieces"] = atomic.LoadInt32(&pm.downloadedPieces)
 	stats["downloaded_bytes"] = atomic.LoadInt64(&pm.downloadedBytes)
 	stats["written_bytes"] = atomic.LoadInt64(&pm.writtenBytes)
-	
+
+	// 添加 bttask.go 需要的字段
+	stats["UploadedBytes"] = atomic.LoadInt64(&pm.uploadedBytes)
+	stats["TotalLength"] = pm.totalLength
+	stats["CompletedBytes"] = atomic.LoadInt64(&pm.downloadedBytes)
+	stats["DownloadSpeed"] = atomic.LoadInt64(&pm.downloadSpeed)
+	stats["UploadSpeed"] = atomic.LoadInt64(&pm.uploadSpeed)
+
 	// 按状态统计piece数
 	stateCounts := make(map[PieceState]int)
 	for _, piece := range pm.pieces {
 		stateCounts[piece.State]++
 	}
-	
+
 	stats["piece_state_counts"] = stateCounts
 	stats["cache_hits"] = atomic.LoadInt64(&pm.cacheHits)
 	stats["cache_misses"] = atomic.LoadInt64(&pm.cacheMisses)
-	
+
 	return stats
 }
 
