@@ -18,6 +18,50 @@ import (
 	"aria2go/internal/protocol"
 )
 
+// DefaultTrackers 默认的公共 tracker 列表（来自 ngosang/trackerslist）
+// 这些 tracker 按照流行度和延迟排序，定期更新
+var DefaultTrackers = []string{
+	// UDP Trackers
+	"udp://tracker.opentrackr.org:1337/announce",
+	"udp://open.tracker.cl:1337/announce",
+	"udp://open.stealth.si:80/announce",
+	"udp://tracker.torrent.eu.org:451/announce",
+	"udp://exodus.desync.com:6969/announce",
+	"udp://tracker1.bt.moack.co.kr:80/announce",
+	"udp://tracker2.bt.moack.co.kr:80/announce",
+	"udp://tracker3.bt.moack.co.kr:6969/announce",
+	"udp://tracker4.bt.moack.co.kr:80/announce",
+	"udp://tracker6.dler.org:2710/announce",
+	"udp://tracker.dler.org:6969/announce",
+	"udp://retracker.netbynet.ru:2710/announce",
+	"udp://retracker.lanta-net.ru:2710/announce",
+	"udp://opentracker.i2p.rocks:6969/announce",
+	"udp://open.demonii.com:1337/announce",
+	"udp://denis.stalker.upeer.me:6969/announce",
+	"udp://tracker.nyaa.uk:6969/announce",
+	"udp://tracker.cyberia.is:6969/announce",
+	"udp://tracker.tiny-vps.com:6969/announce",
+	"udp://tracker.moeking.me:6969/announce",
+	
+	// HTTP/HTTPS Trackers
+	"http://tracker.opentrackr.org:1337/announce",
+	"https://tracker.opentrackr.org:443/announce",
+	"http://open.tracker.cl:1337/announce",
+	"http://open.stealth.si:80/announce",
+	"http://tracker.torrent.eu.org:451/announce",
+	"http://exodus.desync.com:6969/announce",
+	"http://tracker.dler.org:6969/announce",
+	"https://tracker.dler.org:443/announce",
+	"http://retracker.netbynet.ru:2710/announce",
+	"http://retracker.lanta-net.ru:2710/announce",
+	
+	// Archive.org Trackers
+	"udp://bt1.archive.org:6969/announce",
+	"udp://bt2.archive.org:6969/announce",
+	"http://bt1.archive.org:6969/announce",
+	"http://bt2.archive.org:6969/announce",
+}
+
 // Client BitTorrent客户端
 type Client struct {
 	config Config
@@ -180,13 +224,27 @@ func (bd *BTDownloader) Download(ctx context.Context, task core.Task) error {
 	// 初始化tracker管理器
 	trackerManager := NewTrackerManager(torrent.InfoHash, bd.peerID, uint16(bd.config.ListenPort))
 	
-	// 添加trackers
+	// 添加torrent文件中的trackers
 	if torrent.Announce != "" {
 		trackerManager.AddTracker(torrent.Announce)
 	}
 	
 	for _, tier := range torrent.AnnounceList {
 		for _, tracker := range tier {
+			trackerManager.AddTracker(tracker)
+		}
+	}
+	
+	// 添加默认的公共 trackers（如果torrent文件中没有足够的tracker）
+	if len(torrent.AnnounceList) == 0 && torrent.Announce == "" {
+		log.Printf("BTClient[%s] torrent文件中没有tracker，添加默认公共trackers", bd.id)
+		for _, tracker := range DefaultTrackers {
+			trackerManager.AddTracker(tracker)
+		}
+	} else {
+		// 即使有tracker，也添加一些默认的公共tracker作为备份
+		log.Printf("BTClient[%s] 添加默认公共trackers作为备份", bd.id)
+		for _, tracker := range DefaultTrackers {
 			trackerManager.AddTracker(tracker)
 		}
 	}
