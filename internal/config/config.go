@@ -54,6 +54,7 @@ type Config struct {
 	EnablePEX     bool
 	SeedRatio     float64
 	SeedTime      time.Duration
+	BTWriteInterval time.Duration // BitTorrent 写入磁盘间隔
 	
 	// Metalink配置
 	MetalinkPreferredProtocol []string
@@ -116,6 +117,7 @@ func DefaultConfig() *Config {
 		EnablePEX:                true,
 		SeedRatio:                1.0,
 		SeedTime:                 30 * time.Minute,
+		BTWriteInterval:          1 * time.Second, // 默认每秒写入一次
 		MetalinkPreferredProtocol: []string{"https", "http", "ftp"},
 		MetalinkFile:             "",
 		EnableRPC:                false,

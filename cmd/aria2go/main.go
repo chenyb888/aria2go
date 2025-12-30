@@ -17,6 +17,7 @@ import (
 	"aria2go/internal/config"
 	"aria2go/internal/core"
 	"aria2go/internal/factory"
+	"aria2go/internal/session"
 )
 
 const (
@@ -111,17 +112,79 @@ func main() {
 	}()
 	
 	// 创建下载引擎
-	engine := core.NewDefaultEngine()
+		engine := core.NewDefaultEngine()
+		
+		// 启动引擎
+		if err := engine.Start(ctx); err != nil {
+			log.Fatalf("启动引擎失败: %v", err)
+		}
+		defer engine.Stop()
 	
-	// 启动引擎
-	if err := engine.Start(ctx); err != nil {
-		log.Fatalf("启动引擎失败: %v", err)
-	}
-	defer engine.Stop()
-	
-	log.Println("下载引擎已启动，等待任务...")
-	
-	// 任务ID管理和进度显示
+		log.Println("下载引擎已启动，等待任务...")
+		
+		// 创建会话管理器
+		
+			var sessionManager *session.Manager
+		
+			if cfg.SaveSession {
+		
+				var err error
+		
+				sessionManager, err = session.NewManager(cfg.Dir)
+		
+				if err != nil {
+		
+					log.Printf("创建会话管理器失败: %v", err)
+		
+				} else {
+		
+					log.Printf("会话管理器已创建，配置文件: %s/aria2go.session.json", cfg.Dir)
+		
+					
+		
+					// 恢复未完成的任务
+		
+					incompleteTasks := sessionManager.GetIncompleteTasks()
+		
+					if len(incompleteTasks) > 0 {
+		
+						log.Printf("发现 %d 个未完成的任务，正在恢复...", len(incompleteTasks))
+		
+						for _, taskInfo := range incompleteTasks {
+		
+							log.Printf("恢复任务: %s (%s)", taskInfo.ID, taskInfo.URLs[0])
+		
+							task := createDownloadTaskFromInfo(taskInfo, cfg, engine.EventCh())
+		
+							taskID := task.ID()
+		
+							
+		
+							if err := engine.AddTask(task); err != nil {
+		
+								log.Printf("恢复任务失败: %v", err)
+		
+							} else {
+		
+								log.Printf("任务已恢复: %s", taskID)
+		
+							}
+		
+						}
+		
+					} else {
+		
+						log.Printf("没有发现未完成的任务")
+		
+					}
+		
+				}
+		
+			} else {
+		
+				log.Printf("会话保存功能未启用 (--save-session=false)")
+		
+			}	// 任务ID管理和进度显示
 	var (
 		taskIDs   []string
 		taskIDsMu sync.RWMutex
@@ -161,6 +224,16 @@ func main() {
 					log.Printf("添加任务失败: %v", err)
 				} else {
 					log.Printf("已添加任务: %s (ID: %s)", url, taskID)
+					// 保存任务到会话
+					if sessionManager != nil {
+						if err := sessionManager.AddTask(task); err != nil {
+							log.Printf("保存任务到会话失败: %v", err)
+						} else {
+							log.Printf("任务已保存到会话: %s", taskID)
+						}
+					} else {
+						log.Printf("sessionManager 为 nil，跳过保存")
+					}
 				}
 			}
 		}
@@ -177,11 +250,26 @@ func main() {
 		taskIDsMu.Unlock()
 		
 		if err := engine.AddTask(task); err != nil {
-			log.Printf("添加任务失败: %v", err)
-		} else {
-			log.Printf("已添加任务: %s (ID: %s)", url, taskID)
-		}
-	}
+		
+							log.Printf("添加任务失败: %v", err)
+		
+						} else {
+		
+							log.Printf("已添加任务: %s (ID: %s)", url, taskID)
+		
+							// 保存任务到会话
+		
+							if sessionManager != nil {
+		
+								if err := sessionManager.AddTask(task); err != nil {
+		
+									log.Printf("保存任务到会话失败: %v", err)
+		
+								}
+		
+							}
+		
+						}	}
 	
 	// 如果没有任务，显示提示
 	if cfg.InputFile == "" && len(urls) == 0 {
@@ -203,6 +291,16 @@ func main() {
 	
 	// 等待所有任务完成或上下文取消
 	<-ctx.Done()
+	
+	// 保存会话（在退出前）
+	if sessionManager != nil {
+		log.Println("正在保存会话...")
+		if err := sessionManager.Close(); err != nil {
+			log.Printf("保存会话失败: %v", err)
+		} else {
+			log.Println("会话已保存")
+		}
+	}
 	
 	log.Println("正在关闭...")
 }
@@ -344,12 +442,65 @@ func createDownloadTask(url string, cfg *config.Config, eventCh chan<- core.Even
 	config.Options["retry-wait"] = cfg.RetryWait
 	config.Options["max-tries"] = cfg.MaxTries
 	
+	// 设置 BitTorrent 相关选项
+	btOptions := make(map[string]interface{})
+	btOptions["enable-dht"] = cfg.EnableDHT
+	btOptions["dht-listen-port"] = cfg.DHTListenPort
+	btOptions["enable-pex"] = cfg.EnablePEX
+	btOptions["write-interval"] = cfg.BTWriteInterval
+	config.Options["bt"] = btOptions
+	
 	// 使用工厂创建任务
 	task, err := factory.CreateTask(taskID, config, eventCh)
 	if err != nil {
 		// 创建任务失败，返回一个基础任务占位符
 		log.Printf("创建任务失败: %v，使用基础任务占位符", err)
 		return core.NewBaseTask(taskID, config, eventCh)
+	}
+	
+	return task
+}
+
+// createDownloadTaskFromInfo 从 TaskInfo 创建下载任务（用于恢复）
+func createDownloadTaskFromInfo(taskInfo session.TaskInfo, cfg *config.Config, eventCh chan<- core.Event) core.Task {
+	// 创建任务配置
+	config := core.TaskConfig{
+		URLs:         taskInfo.URLs,
+		OutputPath:   taskInfo.OutputPath,
+		SegmentSize:  cfg.MinSplitSize,
+		Connections:  cfg.MaxConnectionPerServer,
+		MaxSpeed:     cfg.MaxDownloadLimit,
+		MaxUploadSpeed: cfg.MaxUploadLimit,
+		Protocol:     taskInfo.Protocol,
+		Options:      make(map[string]interface{}),
+	}
+
+	// 从 taskInfo 恢复选项
+	if taskInfo.Options != nil {
+		config.Options = taskInfo.Options
+	} else {
+		// 设置默认选项
+		config.Options["user-agent"] = cfg.UserAgent
+		config.Options["referer"] = cfg.Referer
+		config.Options["timeout"] = cfg.Timeout
+		config.Options["retry-wait"] = cfg.RetryWait
+		config.Options["max-tries"] = cfg.MaxTries
+		
+		// 设置 BitTorrent 相关选项
+		btOptions := make(map[string]interface{})
+		btOptions["enable-dht"] = cfg.EnableDHT
+		btOptions["dht-listen-port"] = cfg.DHTListenPort
+		btOptions["enable-pex"] = cfg.EnablePEX
+		btOptions["write-interval"] = cfg.BTWriteInterval
+		config.Options["bt"] = btOptions
+	}
+	
+	// 使用工厂创建任务
+	task, err := factory.CreateTask(taskInfo.ID, config, eventCh)
+	if err != nil {
+		// 创建任务失败，返回一个基础任务占位符
+		log.Printf("创建恢复任务失败: %v，使用基础任务占位符", err)
+		return core.NewBaseTask(taskInfo.ID, config, eventCh)
 	}
 	
 	return task

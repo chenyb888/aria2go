@@ -58,7 +58,7 @@ func (br *BtRuntime) GetUploadLengthAtStartup() int64 {
 // BTTask 是BitTorrent下载任务的实现
 type BTTask struct {
 	*core.BaseTask
-	downloader *BTDownloader
+	downloader *AnacrolixDownloader // 下载器引用（用于断点续传）
 	config     Config
 	cancelFunc context.CancelFunc
 	btRuntime  *BtRuntime // BitTorrent运行时状态
@@ -122,6 +122,10 @@ func NewBTTask(id string, config core.TaskConfig, eventCh chan<- core.Event) (*B
 		// 下载目录
 		if downloadDir, ok := opts["download-dir"].(string); ok {
 			btConfig.DownloadDir = downloadDir
+		}
+		// 写入磁盘间隔
+		if writeInterval, ok := opts["write-interval"].(time.Duration); ok {
+			btConfig.WriteInterval = writeInterval
 		}
 	}
 
@@ -197,22 +201,13 @@ func (t *BTTask) Stop() error {
 		log.Printf("BTTask[%s] 已调用取消函数", t.ID())
 	}
 
-	// 3. 停止下载器
+	// 3. 停止下载器（保留已下载的数据以支持断点续传）
 	if t.downloader != nil {
-		// 停止下载器的所有连接和活动
-		// 参考 aria2 的 BTStopDownloadCommand 和 RequestGroup::setForceHaltRequested()
-		log.Printf("BTTask[%s] 停止下载器", t.ID())
-		
-		// 设置 BtRuntime 停止状态
-		if t.btRuntime != nil {
-			t.btRuntime.SetHalt(true)
-			log.Printf("BTTask[%s] 已设置 BtRuntime 停止状态", t.ID())
+		if err := t.downloader.Stop(); err != nil {
+			log.Printf("BTTask[%s] 停止下载器失败: %v", t.ID(), err)
+		} else {
+			log.Printf("BTTask[%s] 下载器已停止（保留已下载数据）", t.ID())
 		}
-		
-		// 停止下载器（如果实现了 Stop 方法）
-		// if err := t.downloader.Stop(); err != nil {
-		// 	log.Printf("BTTask[%s] 停止下载器失败: %v", t.ID(), err)
-		// }
 	}
 
 	// 4. 调用父类的 Stop 方法
@@ -221,9 +216,15 @@ func (t *BTTask) Stop() error {
 
 // Pause 暂停BitTorrent下载任务
 func (t *BTTask) Pause() error {
-	// 调用取消函数
-	if t.cancelFunc != nil {
-		t.cancelFunc()
+	log.Printf("BTTask[%s] 暂停任务", t.ID())
+
+	// 调用下载器的 Pause 方法
+	if t.downloader != nil {
+		if err := t.downloader.Pause(); err != nil {
+			log.Printf("BTTask[%s] 暂停下载器失败: %v", t.ID(), err)
+			return err
+		}
+		log.Printf("BTTask[%s] 下载器已暂停", t.ID())
 	}
 
 	// 调用父类的Pause方法
@@ -232,6 +233,17 @@ func (t *BTTask) Pause() error {
 
 // Resume 恢复BitTorrent下载任务
 func (t *BTTask) Resume() error {
+	log.Printf("BTTask[%s] 恢复任务", t.ID())
+
+	// 调用下载器的 Resume 方法
+	if t.downloader != nil {
+		if err := t.downloader.Resume(); err != nil {
+			log.Printf("BTTask[%s] 恢复下载器失败: %v", t.ID(), err)
+			return err
+		}
+		log.Printf("BTTask[%s] 下载器已恢复", t.ID())
+	}
+
 	// 调用父类的Resume方法（只改变状态，实际恢复由调度器处理）
 	return t.BaseTask.Resume()
 }
@@ -240,23 +252,28 @@ func (t *BTTask) Resume() error {
 func (t *BTTask) download(ctx context.Context) {
 	log.Printf("BTTask[%s] 开始执行下载", t.ID())
 
-	// 创建BitTorrent下载器
-	downloader, err := NewBTDownloader(t.config)
-	if err != nil {
-		log.Printf("BTTask[%s] 创建下载器失败: %v", t.ID(), err)
-		t.BaseTask.SetError(fmt.Errorf("create BitTorrent downloader failed: %w", err))
-		return
-	}
-	t.downloader = downloader
+	// 检查是否已有下载器（断点续传）
+	var downloader *AnacrolixDownloader
+	var err error
 
-	// 记录启动时的上传长度（参考 aria2 的 BtRuntime）
-	if t.btRuntime != nil && downloader.pieceManager != nil {
-		stats := downloader.pieceManager.GetStats()
-		if uploadedBytes, ok := stats["UploadedBytes"].(int64); ok {
-			t.btRuntime.SetUploadLengthAtStartup(uploadedBytes)
-			log.Printf("BTTask[%s] 启动时上传长度: %d bytes", t.ID(), uploadedBytes)
+	if t.downloader != nil && t.downloader.client != nil {
+		// 复用已有的下载器
+		downloader = t.downloader
+		log.Printf("BTTask[%s] 复用已有下载器（断点续传）", t.ID())
+	} else {
+		// 创建新的 BitTorrent 下载器，使用 anacrolix/torrent 库
+		downloader, err = NewAnacrolixDownloader(t.config)
+		if err != nil {
+			log.Printf("BTTask[%s] 创建下载器失败: %v", t.ID(), err)
+			t.BaseTask.SetError(fmt.Errorf("create BitTorrent downloader failed: %w", err))
+			return
 		}
+		// 保存下载器引用（用于停止、恢复等操作）
+		t.downloader = downloader
 	}
+
+	downloader.id = t.ID()
+	downloader.task = t
 
 	// 用于进度更新的通道
 	progressDone := make(chan struct{})
@@ -276,58 +293,47 @@ func (t *BTTask) download(ctx context.Context) {
 				// 获取下载进度，参考 aria2 的 RequestGroup::calculateStat()
 				var progress core.TaskProgress
 
-				if t.downloader != nil && t.downloader.pieceManager != nil {
-					// 从 PieceManager 获取统计信息
-					stats := t.downloader.pieceManager.GetStats()
+				// 从 AnacrolixDownloader 获取统计信息
+				stats := downloader.GetStats()
 
-					// 使用类型断言获取统计值
-					var totalLength, completedBytes, uploadedBytes, downloadSpeed, uploadSpeed int64
-					if val, ok := stats["TotalLength"].(int64); ok {
-						totalLength = val
-					}
-					if val, ok := stats["CompletedBytes"].(int64); ok {
-						completedBytes = val
-					}
-					if val, ok := stats["UploadedBytes"].(int64); ok {
-						uploadedBytes = val
-					}
-					if val, ok := stats["DownloadSpeed"].(int64); ok {
-						downloadSpeed = val
-					}
-					if val, ok := stats["UploadSpeed"].(int64); ok {
-						uploadSpeed = val
-					}
+				// 使用类型断言获取统计值
+				var totalLength, downloadedBytes, uploadedBytes int64
 
-					// 计算进度百分比
-					var progressPercent float64
-					if totalLength > 0 {
-						progressPercent = float64(completedBytes) / float64(totalLength) * 100
-					}
+				if val, ok := stats["downloaded"].(int64); ok {
+					downloadedBytes = val
+				}
+				if val, ok := stats["uploaded"].(int64); ok {
+					uploadedBytes = val
+				}
 
-					progress = core.TaskProgress{
-						TotalBytes:      totalLength,
-						DownloadedBytes: completedBytes,
-						UploadedBytes:   uploadedBytes,
-						DownloadSpeed:   downloadSpeed,
-						UploadSpeed:     uploadSpeed,
-						Progress:        progressPercent,
-					}
+				// 获取总大小
+				if downloader.torrent != nil {
+					totalLength = int64(downloader.torrent.Length())
+				}
 
-					// 如果有 BtRuntime，累加上传长度（包括启动前的上传）
-					if t.btRuntime != nil {
-						allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + uploadedBytes
-						progress.UploadedBytes = allTimeUploadLength
-					}
-				} else {
-					// 下载器未初始化，使用默认值
-					progress = core.TaskProgress{
-						TotalBytes:      0,
-						DownloadedBytes: 0,
-						UploadedBytes:   0,
-						DownloadSpeed:   0,
-						UploadSpeed:     0,
-						Progress:        0,
-					}
+				// 计算进度百分比
+				var progressPercent float64
+				if totalLength > 0 {
+					progressPercent = float64(downloadedBytes) / float64(totalLength) * 100
+				}
+
+				// 简单的速度计算（基于下载量的变化）
+				downloadSpeed := downloadedBytes
+				uploadSpeed := uploadedBytes
+
+				progress = core.TaskProgress{
+					TotalBytes:      totalLength,
+					DownloadedBytes: downloadedBytes,
+					UploadedBytes:   uploadedBytes,
+					DownloadSpeed:   downloadSpeed,
+					UploadSpeed:     uploadSpeed,
+					Progress:        progressPercent,
+				}
+
+				// 如果有 BtRuntime，累加上传长度（包括启动前的上传）
+				if t.btRuntime != nil {
+					allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + uploadedBytes
+					progress.UploadedBytes = allTimeUploadLength
 				}
 
 				// 更新进度
@@ -336,15 +342,8 @@ func (t *BTTask) download(ctx context.Context) {
 		}
 	}()
 
-	// 创建临时任务用于下载
-	tempTask := &tempTask{
-		id:         t.ID(),
-		config:     t.Config(),
-		outputPath: t.Config().OutputPath,
-	}
-
 	// 执行下载
-	err = downloader.Download(ctx, tempTask)
+	err = downloader.Download(ctx, t)
 
 	// 停止进度更新
 	close(progressDone)
@@ -454,4 +453,21 @@ func (t *tempTask) GetOutputPath() string {
 
 func (t *tempTask) GetProgressCallback() func(progress core.TaskProgress) {
 	return nil
+}
+
+// DefaultConfig 返回默认配置
+func DefaultConfig() Config {
+	return Config{
+		ListenPort:            6881,
+		EnableDHT:             true,
+		DHTListenPort:         6881,
+		EnablePEX:             true,
+		EnableEncryption:      true,
+		MaxUploadRate:         0,
+		MaxDownloadRate:       0,
+		MaxActiveTasks:        5,
+		MaxConnectionsPerTask: 55,
+		DownloadDir:           ".",
+		WriteInterval:         1 * time.Second, // 默认每秒写入一次
+	}
 }
