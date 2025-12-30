@@ -302,7 +302,6 @@ func (t *BaseTask) updateProgress(progress TaskProgress) {
 	
 	t.progress = progress
 	
-	// 发送进度更新事件
 	if t.eventCh != nil {
 		t.eventCh <- Event{
 			Type:   EventTaskProgress,
@@ -365,7 +364,7 @@ func (t *BaseTask) SetComplete() {
 	t.complete()
 }
 
-// UpdateProgress 更新任务进度（公共方法，供嵌入类型使用）
+// UpdateProgress 更新任务进度
 func (t *BaseTask) UpdateProgress(progress TaskProgress) {
 	t.updateProgress(progress)
 }

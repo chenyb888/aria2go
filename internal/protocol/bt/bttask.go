@@ -278,7 +278,7 @@ func (t *BTTask) download(ctx context.Context) {
 	// 用于进度更新的通道
 	progressDone := make(chan struct{})
 
-	// 启动进度更新goroutine
+// 启动进度更新goroutine
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -290,54 +290,8 @@ func (t *BTTask) download(ctx context.Context) {
 			case <-progressDone:
 				return
 			case <-ticker.C:
-				// 获取下载进度，参考 aria2 的 RequestGroup::calculateStat()
-				var progress core.TaskProgress
-
-				// 从 AnacrolixDownloader 获取统计信息
-				stats := downloader.GetStats()
-
-				// 使用类型断言获取统计值
-				var totalLength, downloadedBytes, uploadedBytes int64
-
-				if val, ok := stats["downloaded"].(int64); ok {
-					downloadedBytes = val
-				}
-				if val, ok := stats["uploaded"].(int64); ok {
-					uploadedBytes = val
-				}
-
-				// 获取总大小
-				if downloader.torrent != nil {
-					totalLength = int64(downloader.torrent.Length())
-				}
-
-				// 计算进度百分比
-				var progressPercent float64
-				if totalLength > 0 {
-					progressPercent = float64(downloadedBytes) / float64(totalLength) * 100
-				}
-
-				// 简单的速度计算（基于下载量的变化）
-				downloadSpeed := downloadedBytes
-				uploadSpeed := uploadedBytes
-
-				progress = core.TaskProgress{
-					TotalBytes:      totalLength,
-					DownloadedBytes: downloadedBytes,
-					UploadedBytes:   uploadedBytes,
-					DownloadSpeed:   downloadSpeed,
-					UploadSpeed:     uploadSpeed,
-					Progress:        progressPercent,
-				}
-
-				// 如果有 BtRuntime，累加上传长度（包括启动前的上传）
-				if t.btRuntime != nil {
-					allTimeUploadLength := t.btRuntime.GetUploadLengthAtStartup() + uploadedBytes
-					progress.UploadedBytes = allTimeUploadLength
-				}
-
-				// 更新进度
-				t.BaseTask.UpdateProgress(progress)
+				// 注意：进度更新由 AnacrolixDownloader 的 monitorProgress 方法处理
+				// 这里不再重复更新进度，避免冲突
 			}
 		}
 	}()
