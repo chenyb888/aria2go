@@ -864,6 +864,7 @@ func (dc *DHTClient) sendGetPeersRequest(node DHTNode, infoHash [20]byte) ([]str
 	
 	// 解码响应
 	resp, err := decodeDHTMessage(buf[:n])
+	// 调试：打印原始响应数据\n\tfmt.Printf("DHTClient[sendGetPeersRequest] 原始响应: %x\n", buf[:n])\n\t// 调试：打印解码结果\n\tfmt.Printf("DHTClient[sendGetPeersRequest] 解码后: T=%s, Y=%s\n", resp.T, resp.Y)
 	if err != nil {
 		return nil, fmt.Errorf("decode response failed: %w", err)
 	}
