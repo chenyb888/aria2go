@@ -60,8 +60,13 @@ func main() {
 		if strings.HasPrefix(arg, "--init-config=") {
 			initConfigPath = strings.TrimPrefix(arg, "--init-config=")
 			break
-		} else if arg == "--init-config" && i+1 < len(args) {
-			initConfigPath = args[i+1]
+		} else if arg == "--init-config" {
+			// 如果 --init-config 后面没有参数，使用默认配置文件名
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				initConfigPath = args[i+1]
+			} else {
+				initConfigPath = "aria2go.json"
+			}
 			break
 		}
 	}
