@@ -55,9 +55,13 @@ func main() {
 	
 	// 检查是否有 --init-config 参数
 	initConfigPath := ""
-	for _, arg := range os.Args[1:] {
+	args := os.Args[1:]
+	for i, arg := range args {
 		if strings.HasPrefix(arg, "--init-config=") {
 			initConfigPath = strings.TrimPrefix(arg, "--init-config=")
+			break
+		} else if arg == "--init-config" && i+1 < len(args) {
+			initConfigPath = args[i+1]
 			break
 		}
 	}

@@ -141,6 +141,8 @@ func (os *OptionSet) setConfigValue(config *Config, name string, value interface
 		config.EnableColor = value.(bool)
 	case "dry-run":
 		config.DryRun = value.(bool)
+	case "init-config":
+		config.InputFile = value.(string)
 	case "max-connection-per-server":
 		config.MaxConnectionPerServer = value.(int)
 	case "min-split-size":

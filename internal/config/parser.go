@@ -26,7 +26,6 @@ func NewParser() *Parser {
 func (p *Parser) Parse(args []string) (*Config, error) {
 	// 创建默认配置
 	config := DefaultConfig()
-	
 	// 首先解析配置文件
 	configFile := p.findConfigFile()
 	if configFile != "" {
@@ -36,81 +35,42 @@ func (p *Parser) Parse(args []string) (*Config, error) {
 		}
 		config.Merge(fileConfig)
 	}
-	
 	// 解析命令行参数
 	cmdConfig, err := p.optionSet.Parse(args)
 	if err != nil {
 		return nil, fmt.Errorf("parse command line failed: %w", err)
 	}
 	config.Merge(cmdConfig)
-	
 	// 验证配置
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
-	
 	return config, nil
 }
 
 // findConfigFile 查找配置文件
 func (p *Parser) findConfigFile() string {
-	// 查找配置文件的可能位置
-	possiblePaths := []string{
-		".aria2go.conf",
-		".aria2go.json",
-		".config/aria2go/config.json",
-	}
-	
+	// 只查找 aria2go.json 配置文件
+	configFile := "aria2go.json"
 	// 检查当前目录
-	for _, path := range possiblePaths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	if _, err := os.Stat(configFile); err == nil {
+		return configFile
 	}
-	
 	// 检查用户主目录
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
-		for _, path := range possiblePaths {
-			fullPath := filepath.Join(homeDir, path)
-			if _, err := os.Stat(fullPath); err == nil {
-				return fullPath
-			}
-		}
-		
-		// 检查 ~/.aria2go/
-		aria2goDir := filepath.Join(homeDir, ".aria2go")
-		if _, err := os.Stat(aria2goDir); err == nil {
-			configFile := filepath.Join(aria2goDir, "config.json")
-			if _, err := os.Stat(configFile); err == nil {
-				return configFile
-			}
+		fullPath := filepath.Join(homeDir, configFile)
+		if _, err := os.Stat(fullPath); err == nil {
+			return fullPath
 		}
 	}
-	
-	// 检查 /etc/aria2go/
-	etcConfig := "/etc/aria2go/config.json"
-	if _, err := os.Stat(etcConfig); err == nil {
-		return etcConfig
-	}
-	
 	return ""
 }
 
 // parseConfigFile 解析配置文件
 func (p *Parser) parseConfigFile(filePath string) (*Config, error) {
-	// 根据文件扩展名选择解析器
-	ext := filepath.Ext(filePath)
-	
-	switch ext {
-	case ".json":
-		return p.parseJSONConfig(filePath)
-	case ".conf":
-		return p.parseConfConfig(filePath)
-	default:
-		// 尝试自动检测
-		return p.parseJSONConfig(filePath)
-	}
+	// 只支持 JSON 格式
+	return p.parseJSONConfig(filePath)
 }
 
 // parseJSONConfig 解析JSON配置文件
@@ -409,18 +369,15 @@ func SaveConfig(config *Config, filePath string) error {
 		"save_session":                config.SaveSession,
 		"input_file":                  config.InputFile,
 	}
-	
 	// 转换为JSON
 	data, err := json.MarshalIndent(configMap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config failed: %w", err)
 	}
-	
 	// 写入文件
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		return fmt.Errorf("write config file failed: %w", err)
 	}
-	
 	return nil
 }
 
