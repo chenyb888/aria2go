@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"aria2go/internal/config"
 	"aria2go/internal/core"
 	"aria2go/internal/factory"
+	"aria2go/internal/protocol/bt"
 	"aria2go/internal/session"
 	rpcjsonrpc "aria2go/internal/rpc/jsonrpc"
 )
@@ -120,123 +122,244 @@ func main() {
 	}
 	
 	// 创建上下文，处理信号
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	
-	// 设置信号处理
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		ctx, cancel := context.WithCancel(context.Background())
 	
-	go func() {
-		sig := <-sigCh
-		log.Printf("接收到信号: %v，正在关闭...", sig)
-		cancel()
-	}()
+		defer cancel()
 	
-	// 创建下载引擎
-		engine := core.NewDefaultEngine()
 		
+	
+		// 创建下载引擎
+	
+		engine := core.NewDefaultEngine()
+	
+		
+	
 		// 启动引擎
+	
 		if err := engine.Start(ctx); err != nil {
+	
 			log.Fatalf("启动引擎失败: %v", err)
+	
 		}
+	
 		defer engine.Stop()
 	
+		
+	
 		log.Println("下载引擎已启动，等待任务...")
+	
 		
+	
 		// 启动 RPC 服务器（如果启用）
+	
 		var rpcServer *rpcjsonrpc.Server
+	
 		if cfg.EnableRPC {
+	
 			rpcConfig := &rpcjsonrpc.Config{
+	
 				Host:       cfg.RPCHost,
+	
 				Port:       cfg.RPCPort,
+	
 				EnableAuth: cfg.RPCSecret != "",
+	
 				Token:      cfg.RPCSecret,
+	
 			}
+	
 			
+	
 			rpcServer = rpcjsonrpc.NewServer(engine, rpcConfig)
+	
 			
+	
 			// 在单独的 goroutine 中启动 RPC 服务器
+	
 			go func() {
+	
 				if err := rpcServer.Start(ctx); err != nil {
+	
 					log.Printf("RPC 服务器启动失败: %v", err)
+	
 				} else {
+	
 					log.Printf("RPC 服务器已启动，监听地址: %s:%d", cfg.RPCHost, cfg.RPCPort)
+	
 				}
+	
 			}()
+	
 			
+	
 			defer func() {
+	
 				if err := rpcServer.Stop(); err != nil {
+	
 					log.Printf("RPC 服务器停止失败: %v", err)
+	
 				}
+	
 			}()
+	
 		} else {
+	
 			log.Println("RPC 服务器未启用（使用 --enable-rpc 启用）")
+	
 		}
+	
 		
+	
 		// 创建会话管理器
+	
+		var sessionManager *session.Manager
+	
 		
-			var sessionManager *session.Manager
-		
-			if cfg.SaveSession {
-		
-				var err error
-		
-				sessionManager, err = session.NewManager(cfg.Dir)
-		
-				if err != nil {
-		
-					log.Printf("创建会话管理器失败: %v", err)
-		
-				} else {
-		
-					log.Printf("会话管理器已创建，配置文件: %s/aria2go.session.json", cfg.Dir)
-		
-					
-		
-					// 恢复未完成的任务
-		
-					incompleteTasks := sessionManager.GetIncompleteTasks()
-		
-					if len(incompleteTasks) > 0 {
-		
-						log.Printf("发现 %d 个未完成的任务，正在恢复...", len(incompleteTasks))
-		
-						for _, taskInfo := range incompleteTasks {
-		
-							log.Printf("恢复任务: %s (%s)", taskInfo.ID, taskInfo.URLs[0])
-		
-							task := createDownloadTaskFromInfo(taskInfo, cfg, engine.EventCh())
-		
-							taskID := task.ID()
-		
-							
-		
-							if err := engine.AddTask(task); err != nil {
-		
-								log.Printf("恢复任务失败: %v", err)
-		
-							} else {
-		
-								log.Printf("任务已恢复: %s", taskID)
-		
-							}
-		
-						}
-		
-					} else {
-		
-						log.Printf("没有发现未完成的任务")
-		
-					}
-		
-				}
-		
+	
+		if cfg.SaveSession {
+	
+			var err error
+	
+			sessionManager, err = session.NewManager(cfg.Dir)
+	
+			if err != nil {
+	
+				log.Printf("创建会话管理器失败: %v", err)
+	
 			} else {
+	
+				log.Printf("会话管理器已创建，配置文件: %s/aria2go.session.json", cfg.Dir)
+	
+				
+	
+				// 恢复未完成的任务
+	
+				incompleteTasks := sessionManager.GetIncompleteTasks()
+	
+				if len(incompleteTasks) > 0 {
+	
+					log.Printf("发现 %d 个未完成的任务，正在恢复...", len(incompleteTasks))
+	
+					for _, taskInfo := range incompleteTasks {
+	
+											// 构建任务描述字符串
+	
+											taskDesc := taskInfo.ID
+	
+											if len(taskInfo.URLs) > 0 && taskInfo.URLs[0] != "" {
+	
+												taskDesc = fmt.Sprintf("%s (%s)", taskInfo.ID, taskInfo.URLs[0])
+	
+											} else {
+	
+												taskDesc = fmt.Sprintf("%s (%s)", taskInfo.ID, taskInfo.OutputPath)
+	
+											}
+	
+											log.Printf("恢复任务: %s", taskDesc)
+	
+											
+	
+											task := createDownloadTaskFromInfo(taskInfo, cfg, engine.EventCh())
+	
+											taskID := task.ID()
+	
+											
+	
+											
+	
+											if err := engine.AddTask(task); err != nil {
+	
+												log.Printf("恢复任务失败: %v", err)
+	
+											} else {
+	
+												log.Printf("任务已恢复: %s", taskID)
+	
+											}
+	
+										}
+	
+				} else {
+	
+					log.Printf("没有发现未完成的任务")
+	
+				}
+	
+			}
+	
+		} else {
+	
+					log.Printf("会话保存功能未启用 (--save-session=false)")
+	
+				}
+	
+				
+	
+				// 设置 sessionManager 到 RPC 服务器
+	
+				if rpcServer != nil && sessionManager != nil {
+	
+					rpcServer.SetSessionManager(sessionManager)
+	
+					log.Println("会话管理器已设置到 RPC 服务器")
+	
+				}
+	
 		
-				log.Printf("会话保存功能未启用 (--save-session=false)")
+	
+		// 设置信号处理（在 sessionManager 创建之后）
+	
+		sigCh := make(chan os.Signal, 1)
+	
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	
 		
-			}	// 任务ID管理和进度显示
+	
+		go func() {
+	
+			sig := <-sigCh
+	
+			log.Printf("接收到信号: %v，正在优雅关闭...", sig)
+	
+			
+	
+			// 先取消上下文，停止所有任务
+	
+			cancel()
+	
+			
+	
+			// 等待一小段时间让任务清理
+	
+			time.Sleep(1 * time.Second)
+	
+			
+	
+			// 保存会话（在退出前）
+	
+			if sessionManager != nil {
+	
+				log.Println("正在保存会话...")
+	
+				if err := sessionManager.Close(); err != nil {
+	
+					log.Printf("保存会话失败: %v", err)
+	
+				} else {
+	
+					log.Println("会话已保存")
+	
+				}
+	
+			}
+	
+			
+	
+			log.Println("正在关闭...")
+	
+		}()	// 任务ID管理和进度显示
 	var (
 		taskIDs   []string
 		taskIDsMu sync.RWMutex
@@ -276,13 +399,15 @@ func main() {
 					log.Printf("添加任务失败: %v", err)
 				} else {
 					log.Printf("已添加任务: %s (ID: %s)", url, taskID)
-					// 保存任务到会话
+					// 异步保存任务到会话
 					if sessionManager != nil {
-						if err := sessionManager.AddTask(task); err != nil {
-							log.Printf("保存任务到会话失败: %v", err)
-						} else {
-							log.Printf("任务已保存到会话: %s", taskID)
-						}
+						go func(t core.Task) {
+							if err := sessionManager.AddTask(t); err != nil {
+								log.Printf("保存任务到会话失败: %v", err)
+							} else {
+								log.Printf("任务已保存到会话: %s", t.ID())
+							}
+						}(task)
 					} else {
 						log.Printf("sessionManager 为 nil，跳过保存")
 					}
@@ -303,25 +428,33 @@ func main() {
 		
 		if err := engine.AddTask(task); err != nil {
 		
-							log.Printf("添加任务失败: %v", err)
+										log.Printf("添加任务失败: %v", err)
 		
-						} else {
+									} else {
 		
-							log.Printf("已添加任务: %s (ID: %s)", url, taskID)
+										log.Printf("已添加任务: %s (ID: %s)", url, taskID)
 		
-							// 保存任务到会话
+										// 异步保存任务到会话
 		
-							if sessionManager != nil {
+										if sessionManager != nil {
 		
-								if err := sessionManager.AddTask(task); err != nil {
+											go func(t core.Task) {
 		
-									log.Printf("保存任务到会话失败: %v", err)
+												if err := sessionManager.AddTask(t); err != nil {
 		
-								}
+													log.Printf("保存任务到会话失败: %v", err)
 		
-							}
+												} else {
 		
-						}	}
+													log.Printf("任务已保存到会话: %s", t.ID())
+		
+												}
+		
+											}(task)
+		
+										}
+		
+									}	}
 	
 	// 如果没有任务，显示提示
 	if cfg.InputFile == "" && len(urls) == 0 {
@@ -341,18 +474,20 @@ func main() {
 		}
 	}
 	
+	// 启动事件监听器（用于自动更新会话）
+	if sessionManager != nil {
+		go monitorEvents(engine.EventChReadOnly(), sessionManager, engine)
+		log.Println("事件监听器已启动")
+	}
+	
+	// 启动定时保存会话（每60秒）
+	if sessionManager != nil {
+		go startAutoSave(sessionManager, 60*time.Second)
+		log.Println("定时保存已启动（间隔：60秒）")
+	}
+	
 	// 等待所有任务完成或上下文取消
 	<-ctx.Done()
-	
-	// 保存会话（在退出前）
-	if sessionManager != nil {
-		log.Println("正在保存会话...")
-		if err := sessionManager.Close(); err != nil {
-			log.Printf("保存会话失败: %v", err)
-		} else {
-			log.Println("会话已保存")
-		}
-	}
 	
 	log.Println("正在关闭...")
 }
@@ -545,6 +680,56 @@ func createDownloadTaskFromInfo(taskInfo session.TaskInfo, cfg *config.Config, e
 		btOptions["enable-pex"] = cfg.EnablePEX
 		btOptions["write-interval"] = cfg.BTWriteInterval
 		config.Options["bt"] = btOptions
+	}
+	
+	// 特殊处理 BitTorrent 任务
+	if taskInfo.Protocol == "bt" {
+		// 检查是否有种子文件数据
+		if torrentDataB64, ok := config.Options["torrent_data"].(string); ok && torrentDataB64 != "" {
+			// 解码种子文件数据
+			torrentData, err := base64.StdEncoding.DecodeString(torrentDataB64)
+			if err != nil {
+				log.Printf("解码种子文件数据失败: %v", err)
+				return core.NewBaseTask(taskInfo.ID, config, eventCh)
+			}
+			
+			// 解析种子文件
+			metaInfo, err := bt.ParseTorrentData(torrentData)
+			if err != nil {
+				log.Printf("解析种子文件失败: %v", err)
+				return core.NewBaseTask(taskInfo.ID, config, eventCh)
+			}
+			
+			// 初始化 BitTorrent 客户端
+			btClient := bt.GetGlobalClient()
+			if btClient == nil {
+				btConfig := bt.Config{
+					DownloadDir:      cfg.Dir,
+					ListenPort:       6881,
+					EnableDHT:        cfg.EnableDHT,
+					DHTListenPort:    cfg.DHTListenPort,
+					EnablePEX:        cfg.EnablePEX,
+					EnableEncryption: false,
+					MaxUploadRate:    cfg.MaxUploadLimit,
+					MaxDownloadRate:  cfg.MaxDownloadLimit,
+					MaxActiveTasks:   cfg.MaxConcurrentDownloads,
+					MaxConnectionsPerTask: cfg.MaxConnectionPerServer,
+					WriteInterval:    cfg.BTWriteInterval,
+				}
+				
+				btClient, err = bt.InitGlobalClient(btConfig)
+				if err != nil {
+					log.Printf("初始化 BitTorrent 客户端失败: %v", err)
+					return core.NewBaseTask(taskInfo.ID, config, eventCh)
+				}
+			}
+			
+			// 创建 BitTorrent 任务
+			return core.NewBitTorrentTask(taskInfo.ID, metaInfo, taskInfo.OutputPath, config.Options, eventCh, btClient)
+		} else {
+			log.Printf("BitTorrent 任务缺少种子文件数据: %s", taskInfo.ID)
+			return core.NewBaseTask(taskInfo.ID, config, eventCh)
+		}
 	}
 	
 	// 使用工厂创建任务
@@ -959,4 +1144,82 @@ func stopDaemon() error {
 	}
 	
 	return fmt.Errorf("进程 %d 没有在预期时间内退出", pid)
+}
+
+// monitorEvents 监听引擎事件并自动更新会话
+func monitorEvents(eventCh <-chan core.Event, sessionManager *session.Manager, engine *core.DownloadEngine) {
+	for event := range eventCh {
+		switch event.Type {
+		case core.EventTaskStateChanged:
+			// 任务状态变化时更新会话
+			task, err := engine.GetTask(event.TaskID)
+			if err != nil {
+				log.Printf("获取任务失败: %s, 错误: %v", event.TaskID, err)
+				continue
+			}
+			
+			if err := sessionManager.UpdateTask(task); err != nil {
+				// 如果任务不存在，尝试添加
+				if err.Error() == "task not found: "+event.TaskID {
+					if addErr := sessionManager.AddTask(task); addErr != nil {
+						log.Printf("添加任务到会话失败: %s, 错误: %v", event.TaskID, addErr)
+					} else {
+						log.Printf("任务已添加到会话: %s", event.TaskID)
+					}
+				} else {
+					log.Printf("更新任务到会话失败: %s, 错误: %v", event.TaskID, err)
+				}
+			} else {
+				log.Printf("任务状态已更新到会话: %s", event.TaskID)
+			}
+			
+		case core.EventTaskRemoved:
+			// 任务移除时从会话中删除
+			if err := sessionManager.RemoveTask(event.TaskID); err != nil {
+				log.Printf("从会话中移除任务失败: %s, 错误: %v", event.TaskID, err)
+			} else {
+				log.Printf("任务已从会话中移除: %s", event.TaskID)
+			}
+			
+		case core.EventTaskCompleted:
+			// 任务完成时更新会话
+			task, err := engine.GetTask(event.TaskID)
+			if err != nil {
+				log.Printf("获取任务失败: %s, 错误: %v", event.TaskID, err)
+				continue
+			}
+			
+			if err := sessionManager.UpdateTask(task); err != nil {
+				// 如果任务不存在，尝试添加
+				if err.Error() == "task not found: "+event.TaskID {
+					if addErr := sessionManager.AddTask(task); addErr != nil {
+						log.Printf("添加任务到会话失败: %s, 错误: %v", event.TaskID, addErr)
+					} else {
+						log.Printf("任务已添加到会话: %s", event.TaskID)
+					}
+				} else {
+					log.Printf("更新任务到会话失败: %s, 错误: %v", event.TaskID, err)
+				}
+			} else {
+				log.Printf("任务完成状态已保存到会话: %s", event.TaskID)
+			}
+		}
+	}
+}
+
+// startAutoSave 启动定时保存会话
+func startAutoSave(sessionManager *session.Manager, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			if err := sessionManager.Save(); err != nil {
+				log.Printf("定时保存会话失败: %v", err)
+			} else {
+				log.Printf("定时保存会话成功")
+			}
+		}
+	}
 }

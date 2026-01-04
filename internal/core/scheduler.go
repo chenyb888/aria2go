@@ -303,13 +303,22 @@ func (s *DefaultScheduler) executeTask(ctx context.Context, task Task) {
 			// 定期检查任务状态
 			status := task.Status()
 			log.Printf("调度器[executeTask] 检查任务状态: %s, 状态: %v", taskID, status.State)
-			if status.State == TaskStateCompleted || status.State == TaskStateError || status.State == TaskStateStopped || status.State == TaskStatePaused {
-				// 任务已完成、出错、停止或暂停，清理资源
-				log.Printf("调度器[executeTask] 任务已结束，清理: %s, 状态: %v", taskID, status.State)
+			if status.State == TaskStateCompleted || status.State == TaskStateError {
+				// 任务已完成或有错误，清理资源
+				log.Printf("调度器[executeTask] 任务已完成或出错，清理: %s, 状态: %v", taskID, status.State)
 				s.cleanupTask(taskID)
 				return
-			}
-		}
+			} else if status.State == TaskStateStopped {
+				// 任务已停止（移除），清理资源
+				log.Printf("调度器[executeTask] 任务已停止，清理: %s, 状态: %v", taskID, status.State)
+				s.cleanupTask(taskID)
+				return
+			} else if status.State == TaskStatePaused {
+						// 任务已暂停，清理资源并等待恢复
+						log.Printf("调度器[executeTask] 任务已暂停，清理资源: %s, 状态: %v", taskID, status.State)
+						s.cleanupTask(taskID)
+						return
+					}		}
 	}
 }
 

@@ -298,19 +298,48 @@ func (e *DownloadEngine) ResumeTask(taskID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	
+	log.Printf("引擎[ResumeTask] 开始恢复任务: %s", taskID)
+	
 	task, exists := e.tasks[taskID]
 	if !exists {
+		log.Printf("引擎[ResumeTask] 任务不存在: %s", taskID)
 		return ErrTaskNotFound
 	}
 	
+	// 检查任务状态
+	oldState := task.Status().State
+	log.Printf("引擎[ResumeTask] 任务当前状态: %s", oldState)
+	
+	if oldState != TaskStatePaused && oldState != TaskStateStopped {
+		log.Printf("引擎[ResumeTask] 任务状态不是暂停或停止: %s", oldState)
+		return fmt.Errorf("task is not paused or stopped")
+	}
+	
 	if err := task.Resume(); err != nil {
+		log.Printf("引擎[ResumeTask] 任务恢复失败: %s, 错误: %v", taskID, err)
 		return err
 	}
 	
 	// 更新统计
-	if task.Status().State == TaskStateActive {
-		e.stat.NumStopped--
+	newState := task.Status().State
+	log.Printf("引擎[ResumeTask] 任务恢复后状态: %s", newState)
+	
+	if newState == TaskStateActive {
+		if oldState == TaskStateStopped {
+			e.stat.NumStopped--
+		}
 		e.stat.NumActive++
+	} else if newState == TaskStateWaiting {
+		if oldState == TaskStatePaused {
+			// 从暂停恢复，需要重新添加到调度器
+			log.Printf("引擎[ResumeTask] 准备重新调度任务: %s", taskID)
+			// 重新添加到调度器
+			if err := e.sched.Schedule(task); err != nil {
+				log.Printf("引擎[ResumeTask] 重新调度任务失败: %s, 错误: %v", taskID, err)
+				return err
+			}
+			log.Printf("引擎[ResumeTask] 任务已重新调度: %s", taskID)
+		}
 	}
 	
 	return nil
@@ -392,14 +421,17 @@ func (e *DownloadEngine) handleTaskStateChange(event Event) {
 
 	// 根据状态变化更新统计
 	switch payload.OldState {
+	case TaskStateActive:
+		e.stat.NumActive--
+		log.Printf("引擎[handleTaskStateChange] OldState Active->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStateWaiting:
 		e.stat.NumWaiting--
 		log.Printf("引擎[handleTaskStateChange] OldState Waiting->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStatePaused:
-		e.stat.NumStopped--
+		// 暂停时，不改变统计，因为任务还在任务列表中
 		log.Printf("引擎[handleTaskStateChange] OldState Paused->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStateStopped:
-		e.stat.NumStopped--
+		// 停止时，不改变统计，因为任务还在任务列表中
 		log.Printf("引擎[handleTaskStateChange] OldState Stopped->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	}
 
@@ -411,10 +443,10 @@ func (e *DownloadEngine) handleTaskStateChange(event Event) {
 		e.stat.NumWaiting++
 		log.Printf("引擎[handleTaskStateChange] ->NewState Waiting: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStatePaused:
-		e.stat.NumStopped++
+		// 暂停时，不改变统计
 		log.Printf("引擎[handleTaskStateChange] ->NewState Paused: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStateStopped:
-		e.stat.NumStopped++
+		// 停止时，不改变统计
 		log.Printf("引擎[handleTaskStateChange] ->NewState Stopped: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	}
 
@@ -514,8 +546,13 @@ func parseNumber(numStr string) (int64, error) {
 	return val, err
 }
 
-// EventCh 返回引擎的事件通道
+// EventCh 返回引擎的事件通道（只写）
 func (e *DownloadEngine) EventCh() chan<- Event {
+	return e.eventCh
+}
+
+// EventChReadOnly 返回引擎的事件通道（只读）
+func (e *DownloadEngine) EventChReadOnly() <-chan Event {
 	return e.eventCh
 }
 
