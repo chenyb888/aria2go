@@ -62,6 +62,7 @@ type Config struct {
 	
 	// RPC配置
 	EnableRPC     bool
+	RPCHost       string
 	RPCPort       int
 	RPCSecret     string
 	
@@ -121,6 +122,7 @@ func DefaultConfig() *Config {
 		MetalinkPreferredProtocol: []string{"https", "http", "ftp"},
 		MetalinkFile:             "",
 		EnableRPC:                false,
+		RPCHost:                  "0.0.0.0",
 		RPCPort:                  6800,
 		RPCSecret:                "",
 		CheckIntegrity:           false,
@@ -243,11 +245,18 @@ func (c *Config) Merge(other *Config) {
 		c.FTPPasswd = other.FTPPasswd
 	}
 	
-	c.EnableDHT = other.EnableDHT
+	// 布尔值：只在命令行明确指定为 true 时才覆盖
+	// 由于 OptionSet.Parse 现在返回空配置，零值意味着没有在命令行指定
+	// 所以我们只在值为 true 时才覆盖配置文件的值
+	if other.EnableDHT {
+		c.EnableDHT = true
+	}
 	if other.DHTListenPort > 0 {
 		c.DHTListenPort = other.DHTListenPort
 	}
-	c.EnablePEX = other.EnablePEX
+	if other.EnablePEX {
+		c.EnablePEX = true
+	}
 	if other.SeedRatio > 0 {
 		c.SeedRatio = other.SeedRatio
 	}
@@ -262,7 +271,13 @@ func (c *Config) Merge(other *Config) {
 		c.MetalinkFile = other.MetalinkFile
 	}
 	
-	c.EnableRPC = other.EnableRPC
+	// 布尔值：只在命令行明确指定为 true 时才覆盖
+	if other.EnableRPC {
+		c.EnableRPC = true
+	}
+	if other.RPCHost != "" {
+		c.RPCHost = other.RPCHost
+	}
 	if other.RPCPort > 0 {
 		c.RPCPort = other.RPCPort
 	}
@@ -276,7 +291,10 @@ func (c *Config) Merge(other *Config) {
 	if other.AutoSaveInterval > 0 {
 		c.AutoSaveInterval = other.AutoSaveInterval
 	}
-	c.SaveSession = other.SaveSession
+	// 布尔值：只在命令行明确指定为 true 时才覆盖
+	if other.SaveSession {
+		c.SaveSession = true
+	}
 	if other.InputFile != "" {
 		c.InputFile = other.InputFile
 	}

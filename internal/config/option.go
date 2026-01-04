@@ -2,7 +2,6 @@
 package config
 
 import (
-	"flag"
 	"fmt"
 	"strconv"
 	"strings"
@@ -41,79 +40,100 @@ func (os *OptionSet) GetOption(name string) (*Option, bool) {
 	return opt, exists
 }
 
-// Parse 解析命令行参数
+// Parse 解析命令行参数，只返回命令行明确指定的选项
 func (os *OptionSet) Parse(args []string) (*Config, error) {
-	// 创建flag集合
-	flagSet := flag.NewFlagSet("aria2go", flag.ContinueOnError)
-	
-	// 添加flag
-	for name, opt := range os.options {
-		switch opt.Type {
-		case "string":
-			flagSet.String(name, opt.Default.(string), opt.Description)
-		case "int":
-			flagSet.Int(name, opt.Default.(int), opt.Description)
-		case "bool":
-			flagSet.Bool(name, opt.Default.(bool), opt.Description)
-		case "duration":
-			flagSet.Duration(name, opt.Default.(time.Duration), opt.Description)
-		case "float":
-			flagSet.Float64(name, opt.Default.(float64), opt.Description)
-		case "int64":
-			flagSet.Int64(name, opt.Default.(int64), opt.Description)
-		}
+ 	// 创建空配置，不使用默认值
+ 	config := &Config{}
+ 	
+ 	// 自定义解析，支持 -- 前缀
+ 	for i := 0; i < len(args); i++ {
+ 		arg := args[i]
+ 		
+ 		// 跳过非选项参数
+ 		if !strings.HasPrefix(arg, "-") {
+ 			continue
+ 		}
+ 		
+ 		// 移除 - 或 -- 前缀
+ 		name := strings.TrimLeft(arg, "-")
+ 		
+ 		// 检查是否是 = 格式
+ 		if strings.Contains(name, "=") {
+ 			parts := strings.SplitN(name, "=", 2)
+ 			name = parts[0]
+ 			value := parts[1]
+ 			
+ 			// 设置值
+ 			if err := os.setConfigValueFromString(config, name, value); err != nil {
+ 				return nil, fmt.Errorf("invalid value for --%s: %v", name, err)
+ 			}
+ 		} else {
+ 			// 检查是否有下一个参数作为值
+ 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+ 				value := args[i+1]
+ 				
+ 				// 设置值
+ 				if err := os.setConfigValueFromString(config, name, value); err != nil {
+ 					return nil, fmt.Errorf("invalid value for --%s: %v", name, err)
+ 				}
+ 				
+ 				i++ // 跳过值参数
+ 			} else {
+ 				// 布尔值，设置为 true
+ 				if err := os.setConfigValueFromString(config, name, "true"); err != nil {
+ 					return nil, fmt.Errorf("invalid value for --%s: %v", name, err)
+ 				}
+ 			}
+ 		}
+ 	}
+ 	
+ 	return config, nil
+ }
+// setConfigValueFromString 从字符串设置配置值
+func (os *OptionSet) setConfigValueFromString(config *Config, name string, value string) error {
+	opt, exists := os.options[name]
+	if !exists {
+		return fmt.Errorf("unknown option: --%s", name)
 	}
 	
-	// 解析
-	if err := flagSet.Parse(args); err != nil {
-		return nil, err
+	switch opt.Type {
+	case "string":
+		os.setConfigValue(config, name, value)
+	case "int":
+		intValue, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		os.setConfigValue(config, name, intValue)
+	case "bool":
+		boolValue, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		os.setConfigValue(config, name, boolValue)
+	case "duration":
+		durationValue, err := time.ParseDuration(value)
+		if err != nil {
+			return err
+		}
+		os.setConfigValue(config, name, durationValue)
+	case "float":
+		floatValue, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		os.setConfigValue(config, name, floatValue)
+	case "int64":
+		int64Value, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return err
+		}
+		os.setConfigValue(config, name, int64Value)
+	default:
+		return fmt.Errorf("unsupported type: %s", opt.Type)
 	}
 	
-	// 创建配置
-	config := DefaultConfig()
-	
-	// 更新配置
-	for name, opt := range os.options {
-		flag := flagSet.Lookup(name)
-		if flag == nil {
-			continue
-		}
-		
-		switch opt.Type {
-		case "string":
-			value := flag.Value.String()
-			if value != opt.Default.(string) {
-				os.setConfigValue(config, name, value)
-			}
-		case "int":
-			value, _ := strconv.Atoi(flag.Value.String())
-			if value != opt.Default.(int) {
-				os.setConfigValue(config, name, value)
-			}
-		case "bool":
-			value := flag.Value.String() == "true"
-			if value != opt.Default.(bool) {
-				os.setConfigValue(config, name, value)
-			}
-		case "duration":
-			value, _ := time.ParseDuration(flag.Value.String())
-			if value != opt.Default.(time.Duration) {
-				os.setConfigValue(config, name, value)
-			}
-		case "float":
-			value, _ := strconv.ParseFloat(flag.Value.String(), 64)
-			if value != opt.Default.(float64) {
-				os.setConfigValue(config, name, value)
-			}
-		case "int64":
-			value, _ := strconv.ParseInt(flag.Value.String(), 10, 64)
-			if value != opt.Default.(int64) {
-				os.setConfigValue(config, name, value)
-			}
-		}
-	}
-	
-	return config, nil
+	return nil
 }
 
 // setConfigValue 设置配置值
@@ -199,6 +219,8 @@ func (os *OptionSet) setConfigValue(config *Config, name string, value interface
 		config.MetalinkFile = value.(string)
 	case "enable-rpc":
 		config.EnableRPC = value.(bool)
+	case "rpc-host":
+		config.RPCHost = value.(string)
 	case "rpc-port":
 		config.RPCPort = value.(int)
 	case "rpc-secret":
@@ -276,6 +298,7 @@ func DefaultOptionSet() *OptionSet {
 		
 		// RPC选项
 		{"enable-rpc", "启用RPC", false, nil, "bool"},
+		{"rpc-host", "RPC监听主机", "0.0.0.0", nil, "string"},
 		{"rpc-port", "RPC端口", 6800, nil, "int"},
 		{"rpc-secret", "RPC密钥", "", nil, "string"},
 		

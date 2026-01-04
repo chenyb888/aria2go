@@ -270,16 +270,10 @@ func (s *DefaultScheduler) adjustConcurrency() {
 // executeTask 执行任务
 func (s *DefaultScheduler) executeTask(ctx context.Context, task Task) {
 	taskID := task.ID()
-	
+
 	log.Printf("调度器[executeTask] 开始执行任务: %s", taskID)
-	
-	// 任务执行前发送状态变化事件
-	s.sendTaskEvent(taskID, EventTaskStateChanged, TaskStateChangedPayload{
-		OldState: TaskStateWaiting,
-		NewState: TaskStateActive,
-	})
-	
-	// 启动任务
+
+	// 启动任务（任务内部会发送状态变化事件）
 	log.Printf("调度器[executeTask] 调用task.Start: %s", taskID)
 	if err := task.Start(ctx); err != nil {
 		log.Printf("调度器[executeTask] 任务启动失败: %s, 错误: %v", taskID, err)
@@ -309,9 +303,9 @@ func (s *DefaultScheduler) executeTask(ctx context.Context, task Task) {
 			// 定期检查任务状态
 			status := task.Status()
 			log.Printf("调度器[executeTask] 检查任务状态: %s, 状态: %v", taskID, status.State)
-			if status.State == TaskStateCompleted || status.State == TaskStateError {
-				// 任务已完成或有错误，清理资源
-				log.Printf("调度器[executeTask] 任务已完成或出错，清理: %s, 状态: %v", taskID, status.State)
+			if status.State == TaskStateCompleted || status.State == TaskStateError || status.State == TaskStateStopped || status.State == TaskStatePaused {
+				// 任务已完成、出错、停止或暂停，清理资源
+				log.Printf("调度器[executeTask] 任务已结束，清理: %s, 状态: %v", taskID, status.State)
 				s.cleanupTask(taskID)
 				return
 			}

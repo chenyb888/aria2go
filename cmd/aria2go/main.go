@@ -18,6 +18,7 @@ import (
 	"aria2go/internal/core"
 	"aria2go/internal/factory"
 	"aria2go/internal/session"
+	rpcjsonrpc "aria2go/internal/rpc/jsonrpc"
 )
 
 const (
@@ -26,18 +27,11 @@ const (
 )
 
 func main() {
-	// 解析配置
-	parser := config.NewParser()
-	cfg, err := parser.Parse(os.Args[1:])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "配置错误: %v\n", err)
-		fmt.Fprintf(os.Stderr, "使用 --help 查看可用选项\n")
-		os.Exit(1)
-	}
-	
-	// 显示帮助信息（如果指定了--help）
-	for _, arg := range os.Args[1:] {
+	// 检查是否有 --help 或 --version 参数（在解析配置之前）
+	args := os.Args[1:]
+	for _, arg := range args {
 		if arg == "--help" || arg == "-h" {
+			parser := config.NewParser()
 			printHelp(parser)
 			return
 		}
@@ -47,15 +41,8 @@ func main() {
 		}
 	}
 	
-	// 处理 --init-config 参数
-	if cfg.InputFile == "init-config" {
-		// 这里使用 InputFile 字段临时存储 init-config 的值
-		// 实际应该在 Parse 时处理
-	}
-	
-	// 检查是否有 --init-config 参数
+	// 检查是否有 --init-config 参数（在解析配置之前）
 	initConfigPath := ""
-	args := os.Args[1:]
 	for i, arg := range args {
 		if strings.HasPrefix(arg, "--init-config=") {
 			initConfigPath = strings.TrimPrefix(arg, "--init-config=")
@@ -73,6 +60,13 @@ func main() {
 	
 	// 如果指定了 --init-config，生成配置文件并退出
 	if initConfigPath != "" {
+		// 创建默认配置用于生成配置文件
+		parser := config.NewParser()
+		cfg, err := parser.Parse([]string{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "创建配置失败: %v\n", err)
+			os.Exit(1)
+		}
 		if err := config.SaveConfig(cfg, initConfigPath); err != nil {
 			fmt.Fprintf(os.Stderr, "生成配置文件失败: %v\n", err)
 			os.Exit(1)
@@ -81,8 +75,25 @@ func main() {
 		return
 	}
 	
+	// 解析配置
+	parser := config.NewParser()
+	cfg, err := parser.Parse(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "配置错误: %v\n", err)
+		fmt.Fprintf(os.Stderr, "使用 --help 查看可用选项\n")
+		os.Exit(1)
+	}
+	
 	// 初始化日志
 	initLogging(cfg)
+	
+	// 输出配置文件加载信息
+	configFile := parser.FindConfigFile()
+	if configFile != "" {
+		log.Printf("已加载配置文件: %s", configFile)
+	} else {
+		log.Printf("未找到配置文件，使用默认配置")
+	}
 	
 	// 处理daemon模式
 	if cfg.Daemon {
@@ -99,6 +110,8 @@ func main() {
 	log.Printf("aria2go %s 启动", version)
 	log.Printf("下载目录: %s", cfg.Dir)
 	log.Printf("最大并发下载数: %d", cfg.MaxConcurrentDownloads)
+	log.Printf("DHT: %v, PEX: %v, CheckIntegrity: %v, SaveSession: %v", cfg.EnableDHT, cfg.EnablePEX, cfg.CheckIntegrity, cfg.SaveSession)
+	log.Printf("配置文件: %s", parser.FindConfigFile())
 	
 	// 检查dry-run模式
 	if cfg.DryRun {
@@ -130,6 +143,36 @@ func main() {
 		defer engine.Stop()
 	
 		log.Println("下载引擎已启动，等待任务...")
+		
+		// 启动 RPC 服务器（如果启用）
+		var rpcServer *rpcjsonrpc.Server
+		if cfg.EnableRPC {
+			rpcConfig := &rpcjsonrpc.Config{
+				Host:       cfg.RPCHost,
+				Port:       cfg.RPCPort,
+				EnableAuth: cfg.RPCSecret != "",
+				Token:      cfg.RPCSecret,
+			}
+			
+			rpcServer = rpcjsonrpc.NewServer(engine, rpcConfig)
+			
+			// 在单独的 goroutine 中启动 RPC 服务器
+			go func() {
+				if err := rpcServer.Start(ctx); err != nil {
+					log.Printf("RPC 服务器启动失败: %v", err)
+				} else {
+					log.Printf("RPC 服务器已启动，监听地址: %s:%d", cfg.RPCHost, cfg.RPCPort)
+				}
+			}()
+			
+			defer func() {
+				if err := rpcServer.Stop(); err != nil {
+					log.Printf("RPC 服务器停止失败: %v", err)
+				}
+			}()
+		} else {
+			log.Println("RPC 服务器未启用（使用 --enable-rpc 启用）")
+		}
 		
 		// 创建会话管理器
 		

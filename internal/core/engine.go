@@ -256,12 +256,16 @@ func (e *DownloadEngine) updateStatOnRemove(status TaskStatus) {
 	switch status.State {
 	case TaskStateActive:
 		e.stat.NumActive--
+		log.Printf("引擎[updateStatOnRemove] Active 任务移除: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStateWaiting:
 		e.stat.NumWaiting--
+		log.Printf("引擎[updateStatOnRemove] Waiting 任务移除: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStatePaused:
 		e.stat.NumStopped--
+		log.Printf("引擎[updateStatOnRemove] Paused 任务移除: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	case TaskStateStopped:
 		e.stat.NumStopped--
+		log.Printf("引擎[updateStatOnRemove] Stopped 任务移除: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 	}
 	e.stat.NumTotal--
 }
@@ -378,9 +382,44 @@ func (e *DownloadEngine) handleEvent(event Event) {
 
 // handleTaskStateChange 处理任务状态变化
 func (e *DownloadEngine) handleTaskStateChange(event Event) {
-	// 更新全局统计
-	// 这里需要根据任务状态变化更新 NumActive, NumWaiting 等统计
-	// 简化实现，后续完善
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	payload, ok := event.Payload.(TaskStateChangedPayload)
+	if !ok {
+		return
+	}
+
+	// 根据状态变化更新统计
+	switch payload.OldState {
+	case TaskStateWaiting:
+		e.stat.NumWaiting--
+		log.Printf("引擎[handleTaskStateChange] OldState Waiting->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	case TaskStatePaused:
+		e.stat.NumStopped--
+		log.Printf("引擎[handleTaskStateChange] OldState Paused->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	case TaskStateStopped:
+		e.stat.NumStopped--
+		log.Printf("引擎[handleTaskStateChange] OldState Stopped->: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	}
+
+	switch payload.NewState {
+	case TaskStateActive:
+		e.stat.NumActive++
+		log.Printf("引擎[handleTaskStateChange] ->NewState Active: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	case TaskStateWaiting:
+		e.stat.NumWaiting++
+		log.Printf("引擎[handleTaskStateChange] ->NewState Waiting: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	case TaskStatePaused:
+		e.stat.NumStopped++
+		log.Printf("引擎[handleTaskStateChange] ->NewState Paused: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	case TaskStateStopped:
+		e.stat.NumStopped++
+		log.Printf("引擎[handleTaskStateChange] ->NewState Stopped: Active=%d, Waiting=%d, Stopped=%d", e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
+	}
+
+	log.Printf("引擎[handleTaskStateChange] 任务 %s 状态变化: %s -> %s, 统计: Active=%d, Waiting=%d, Stopped=%d",
+		event.TaskID, payload.OldState, payload.NewState, e.stat.NumActive, e.stat.NumWaiting, e.stat.NumStopped)
 }
 
 // handleTaskProgress 处理任务进度更新

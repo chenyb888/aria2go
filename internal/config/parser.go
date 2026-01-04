@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,6 +47,11 @@ func (p *Parser) Parse(args []string) (*Config, error) {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 	return config, nil
+}
+
+// FindConfigFile 查找配置文件（公开方法）
+func (p *Parser) FindConfigFile() string {
+	return p.findConfigFile()
 }
 
 // findConfigFile 查找配置文件
@@ -256,6 +262,10 @@ func (p *Parser) parseJSONConfig(filePath string) (*Config, error) {
 			if b, ok := value.(bool); ok {
 				config.EnableRPC = b
 			}
+		case "rpc_host":
+			if str, ok := value.(string); ok {
+				config.RPCHost = str
+			}
 		case "rpc_port":
 			if num, ok := value.(float64); ok {
 				config.RPCPort = int(num)
@@ -285,6 +295,9 @@ func (p *Parser) parseJSONConfig(filePath string) (*Config, error) {
 		case "save_session":
 			if b, ok := value.(bool); ok {
 				config.SaveSession = b
+				log.Printf("DEBUG: save_session parsed as bool: %v", b)
+			} else {
+				log.Printf("DEBUG: save_session value is not bool, type: %T, value: %v", value, value)
 			}
 		case "input_file":
 			if str, ok := value.(string); ok {
@@ -360,6 +373,7 @@ func SaveConfig(config *Config, filePath string) error {
 		"metalink_preferred_protocol": config.MetalinkPreferredProtocol,
 		"metalink_file":               config.MetalinkFile,
 		"enable_rpc":                  config.EnableRPC,
+		"rpc_host":                    config.RPCHost,
 		"rpc_port":                    config.RPCPort,
 		"rpc_secret":                  config.RPCSecret,
 		"check_integrity":             config.CheckIntegrity,
